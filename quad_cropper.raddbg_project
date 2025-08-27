@@ -1,0 +1,9 @@
+// raddbg 0.9.18 project file
+
+recent_file: path: "main.cpp"
+target:
+{
+  executable: "bin/Debug/quad_cropper.exe"
+  working_directory: "bin/Debug/"
+  enabled: 1
+}
