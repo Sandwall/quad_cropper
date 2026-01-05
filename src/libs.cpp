@@ -28,3 +28,6 @@
 #include <sokol/sokol_log.h>
 #include <sokol/sokol_glue.h>
 #include <sokol/sokol_imgui.h>
+
+#include <nfde/nfd_win.cpp>
+#include <nfde/nfd.h>

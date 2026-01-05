@@ -11,6 +11,10 @@
 
 #include <imgui/imgui.h>
 
+#include <nfde/nfd.h>
+
+#include "app.cxx"
+
 void init() {
 	sg_setup(sg_desc{
 		.logger = {.func = slog_func },
@@ -22,13 +26,18 @@ void init() {
 		});
 
 	simgui_setup(simgui_desc_t{
+		.ini_filename = nullptr,
 		.logger = {.func = slog_func },
 		});
+	ImGui::GetIO().FontGlobalScale = 2.0f;
+
+	NFD_Init();
+
+	app_init();
 }
 
 void event(const sapp_event* event) {
-	\
-		simgui_handle_event(event);
+	simgui_handle_event(event);
 }
 
 void frame() {
@@ -44,7 +53,7 @@ void frame() {
 			.swapchain = sglue_swapchain()
 		});
 
-	ImGui::ShowDemoWindow();
+	app_frame();
 
 	simgui_render();
 	sg_end_pass();
@@ -52,6 +61,10 @@ void frame() {
 }
 
 void cleanup() {
+
+	app_cleanup();
+
+	NFD_Quit();
 	simgui_shutdown();
 	sgl_shutdown();
 	sg_shutdown();
@@ -71,6 +84,8 @@ sapp_desc sokol_main(int argc, char* argv[]) {
 		.enable_dragndrop = true,
 		.icon = {.sokol_default = true, },
 		.logger = {.func = slog_func},
+#ifdef _DEBUG
 		.win32_console_create = true,
+#endif
 	};
 }

@@ -2,7 +2,7 @@
 setlocal
 cd /D "%~dp0"
 
-if not exist "main.cpp" (
+if not exist "src/main.cpp" (
 	echo Please run this script from the root directory of the project!
 	exit /b
 )
@@ -45,10 +45,9 @@ if not exist %mode% mkdir %mode%
 popd
 
 :: Perform compilation
+if not exist %objectFolder%libs.obj cl /I.\include /c src/libs.cpp /Fo%objectFolder%libs.obj %cl_flags%
 
-if not exist %objectFolder%libs.obj cl /I.\include /c libs.cpp /Fo%objectFolder%libs.obj %cl_flags%
-
-cl /I.\include /c main.cpp /Fo%objectFolder%main.obj %cl_flags% 
+cl /I.\include /c src/main.cpp /Fo%objectFolder%main.obj %cl_flags% 
 link %objectFolder%main.obj %objectFolder%libs.obj %link_flags%
 
 echo Build complete!
