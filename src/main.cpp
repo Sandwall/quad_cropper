@@ -1,18 +1,4 @@
-#include <stb/stb_image.h>
-#include <stb/stb_image_resize2.h>
-#include <stb/stb_image_write.h>
-
-#include <sokol/sokol_app.h>
-#include <sokol/sokol_gfx.h>
-#include <sokol/sokol_gl.h>
-#include <sokol/sokol_log.h>
-#include <sokol/sokol_glue.h>
-#include <sokol/sokol_imgui.h>
-
-#include <imgui/imgui.h>
-
-#include <nfde/nfd.h>
-
+#include "includes.hpp"
 #include "app.cxx"
 
 void init() {
@@ -29,7 +15,7 @@ void init() {
 		.ini_filename = nullptr,
 		.logger = {.func = slog_func },
 		});
-	ImGui::GetIO().FontGlobalScale = 2.0f;
+	ImGui::GetIO().FontGlobalScale = 1.0f;
 
 	NFD_Init();
 

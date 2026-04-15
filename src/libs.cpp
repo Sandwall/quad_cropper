@@ -4,6 +4,7 @@
  */
 
 #define _CRT_SECURE_NO_WARNINGS
+#pragma comment(lib, "ole32.lib")
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
