@@ -51,3 +51,5 @@ cl /I.\include /c src/main.cpp /Fo%objectFolder%main.obj %cl_flags%
 link %objectFolder%main.obj %objectFolder%libs.obj %link_flags%
 
 echo Build complete!
+
+endlocal

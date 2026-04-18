@@ -15,7 +15,8 @@ void init() {
 		.ini_filename = nullptr,
 		.logger = {.func = slog_func },
 		});
-	ImGui::GetIO().FontGlobalScale = 1.0f;
+
+	ImGui::GetIO().FontGlobalScale = 1.25f;
 
 	NFD_Init();
 
@@ -29,19 +30,22 @@ void event(const sapp_event* event) {
 void frame() {
 	simgui_new_frame({ sapp_width(), sapp_height(), sapp_frame_duration(), sapp_dpi_scale() });
 
+	app_frame();
+
 	sg_begin_pass(sg_pass{
 		.action = sg_pass_action{
 			.colors = {{
 					.load_action = SG_LOADACTION_CLEAR,
-					.clear_value = { 0.25f, 0.25f, 0.25f, 1.0f },
+					.clear_value = { 0.20f, 0.20f, 0.20f, 1.0f },
 				}},
 			},
 			.swapchain = sglue_swapchain()
 		});
 
-	app_frame();
 
+	sgl_draw();
 	simgui_render();
+
 	sg_end_pass();
 	sg_commit();
 }
