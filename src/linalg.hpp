@@ -1,7 +1,6 @@
 #pragma once
 
 #include <algorithm>
-#include <initializer_list>
 #include <math.h>
 
 template <int N> struct Vector {
@@ -15,7 +14,7 @@ template <int N> struct Vector {
 		struct {
 			float x, y, z, w;
 		};
-	}
+	};
 
 	constexpr Vector() {
 		for (int i = 0; i < N; i++)
@@ -25,13 +24,6 @@ template <int N> struct Vector {
 	template <typename... Args>
 	constexpr Vector(Args... args) requires (sizeof...(args) == N)
 		: data{ static_cast<float>(args)... } {
-	}
-
-	constexpr Vector(std::initializer_list<float>() list) {
-		int index = 0;
-		for (float f : list) {
-			data[index++] = f;
-		}
 	}
 
 	float& operator[](int index) { return data[index]; }
@@ -294,19 +286,21 @@ struct Matrix {
 		return *this;
 	}
 
-	Matrix& operator-=(const Matrix& rhs)
+	Matrix& operator-=(const Matrix& rhs) {
 		for (int i = 0; i < Rows * Cols; i++) {
 			data[i] -= rhs.data[i];
 
 			return *this;
 		}
+    }
 
-	Matrix& operator*=(float scalar)
+	Matrix& operator*=(float scalar) {
 		for (int i = 0; i < Rows * Cols; i++) {
 			data[i] *= scalar;
 
 			return *this;
 		}
+    }
 
 	Matrix& operator/=(float scalar) {
 		if (0.0f == scalar) {
