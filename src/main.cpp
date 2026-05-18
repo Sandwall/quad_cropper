@@ -19,7 +19,6 @@ void init() {
 	ImGui::GetIO().FontGlobalScale = 1.25f;
 
 	NFD_Init();
-
 	app_init();
 }
 
@@ -29,7 +28,6 @@ void event(const sapp_event* event) {
 
 void frame() {
 	simgui_new_frame({ sapp_width(), sapp_height(), sapp_frame_duration(), sapp_dpi_scale() });
-
 	app_frame();
 
 	sg_begin_pass(sg_pass{

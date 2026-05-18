@@ -1,5 +1,8 @@
 #include "includes.hpp"
 
+#include "linalg.hpp"
+#include "shaders.glsl.h"
+
 // This file is #included inside of main.cpp as part of a "jumbo" build,
 // which means any code here has access to the same stuff that's #included at the top of main.cpp
 
@@ -21,6 +24,12 @@ When the save menu is open:
 
 */
 
+static constexpr nfdu8filteritem_t IMAGE_FILTER_ITEMS = {
+	.name = "Image Files",
+	.spec = "png,jpg,jpeg,gif,pic,ppm,pgm,tga"
+};
+
+
 struct ImageInfo {
 	sg_view view;
 	sg_image image;
@@ -34,21 +43,10 @@ struct ImageInfo {
 		memset(this, 0, sizeof(ImageInfo));
 	}
 
+	bool is_loaded() const { return nullptr != data; }
+
 	void load(std::string_view path) {
-		if (data) {
-			stbi_image_free(data);
-			data = nullptr;
-
-			width = 0;
-			height = 0;
-			nChannels = 0;
-
-			sg_destroy_image(image);
-			image = { 0 };
-
-			sg_destroy_view(view);
-			view = { 0 };
-		}
+		release();
 
 		// use stbi to load image
 		{
@@ -80,10 +78,27 @@ struct ImageInfo {
 				.image = image
 			} });
 	}
+
+	void release() {
+		if (is_loaded()) {
+			stbi_image_free(data);
+			data = nullptr;
+
+			width = 0;
+			height = 0;
+			nChannels = 0;
+
+			sg_destroy_image(image);
+			image = { 0 };
+
+			sg_destroy_view(view);
+			view = { 0 };
+		}
+	}
 } loadedImage;
 
-sg_sampler nearestSampler;
 sg_sampler linearSampler;
+sg_shader mainShader;
 sgl_pipeline mainPipeline;
 
 float viewScale;
@@ -114,16 +129,13 @@ float magnitude(const ImVec2& vec) {
 
 // forward declarations
 void setup_mainmenu_bar();
-void define_modals();
+void build_imgui_modals();
+void build_imgui_export_modal();
+void build_imgui_controls(const ImGuiIO& io, float width, float height);
+void handle_mouse_controls(const ImGuiIO& io, float width, float height);
+void draw_editor_with_sgl(const ImGuiIO& io, float width, float height);
 
 void app_init() {
-	nearestSampler = sg_make_sampler(sg_sampler_desc{
-		.min_filter = SG_FILTER_NEAREST,
-		.mag_filter = SG_FILTER_NEAREST,
-		.wrap_u = SG_WRAP_CLAMP_TO_EDGE,
-		.wrap_v = SG_WRAP_CLAMP_TO_EDGE
-		});
-
 	linearSampler = sg_make_sampler(sg_sampler_desc{
 		.min_filter = SG_FILTER_LINEAR,
 		.mag_filter = SG_FILTER_LINEAR,
@@ -131,7 +143,10 @@ void app_init() {
 		.wrap_v = SG_WRAP_CLAMP_TO_EDGE
 		});
 
+	mainShader = sg_make_shader(mainShd_shader_desc(sg_query_backend()));
+
 	mainPipeline = sgl_make_pipeline(sg_pipeline_desc{
+		.shader = mainShader,
 		.depth = {
 			.compare = SG_COMPAREFUNC_LESS_EQUAL,
 			.write_enabled = true,
@@ -150,16 +165,132 @@ void app_frame() {
 	const float screenHeight = sapp_heightf();
 	const ImGuiIO& io = ImGui::GetIO();
 
-	//
-	// imgui stuff
-	//
 	setup_mainmenu_bar();
-	define_modals();
 
 	// ImGui::ShowDemoWindow();
 
-	ImGui::SetNextWindowSize(ImVec2(screenWidth / 2.0f, 2.0f * screenHeight / 3.0f), ImGuiCond_Appearing);
-	if (loadedImage.data) {
+	build_imgui_controls(io, screenWidth, screenHeight);
+	build_imgui_modals();
+
+	handle_mouse_controls(io, screenWidth, screenHeight);
+	draw_editor_with_sgl(io, screenWidth, screenHeight);
+}
+
+void app_cleanup() {
+	sg_destroy_shader(mainShader);
+	sgl_destroy_pipeline(mainPipeline);
+	sg_destroy_sampler(linearSampler);
+}
+
+//
+// INLINED FUNCTIONS - This is just done for the sake of cleanliness/organization...
+//                     might change later...
+//
+
+inline void setup_mainmenu_bar() {
+	ImGui::BeginMainMenuBar();
+
+	if (ImGui::MenuItem("Open Image")) {
+		nfdu8char_t* path = nullptr;
+		nfdresult_t result = NFD_OpenDialogU8(&path, &IMAGE_FILTER_ITEMS, 1, nullptr);
+
+		switch (result) {
+		case NFD_OKAY: {
+			std::string_view pathView(path);
+
+			// TODO: actually load the image
+			// maybe we'll want to reset the UV corners when we load a new image
+			loadedImage.load(pathView);
+
+			NFD_FreePathU8(path);
+			path = nullptr;
+
+		} break;
+		case NFD_ERROR:
+			ImGui::OpenPopup("NFD Error!");
+			nfdError = NFD_GetError();
+			break;
+		}
+	}
+
+	if (ImGui::MenuItem("Save Output", nullptr, nullptr, loadedImage.is_loaded())) {
+		ImGui::OpenPopup("Export Cropped Image");
+	}
+
+	build_imgui_export_modal();
+
+	ImGui::EndMainMenuBar();
+}
+
+inline void build_imgui_modals() {
+	// Define NFD Error popup modal
+	if (ImGui::BeginPopupModal("NFD Error!")) {
+		if (nfdError.length() > 0) {
+			ImGui::Text("Error message: %s", nfdError.c_str());
+		}
+
+		ImGui::Dummy(ImVec2(0, 120));
+
+		if (ImGui::Button("OK")) {
+			ImGui::CloseCurrentPopup();
+		}
+
+		ImGui::SetItemDefaultFocus();
+		ImGui::EndPopup();
+	}
+
+	// Define STB image error popup modal
+	if (ImGui::BeginPopupModal("STB Image Error!")) {
+		ImGui::EndPopup();
+	}
+}
+
+void build_imgui_export_modal() {
+	if (ImGui::BeginPopupModal("Export Cropped Image")) {
+		static int outputFilterChoice = 0;
+		constexpr int numOutputFilters = 2;
+		static const char* outputFilters[numOutputFilters] = {
+			"Nearest Neighbor",
+			"Bilinear"
+		};
+		static int outputResolution[2] = { 512, 512 };
+
+		ImGui::ListBox("Output Filters", &outputFilterChoice, outputFilters, numOutputFilters);
+		ImGui::DragInt2("Output Resolution", outputResolution, 0, 0);
+
+		if (ImGui::Button("Save")) {
+			nfdu8char_t* path = nullptr;
+			nfdresult_t result = NFD_SaveDialogU8(&path, &IMAGE_FILTER_ITEMS, 1, nullptr, "image.png");
+
+			switch (result) {
+			case NFD_OKAY: {
+				std::string_view pathView(path);
+
+				// TODO: actually load the image
+				// maybe we'll want to reset the UV corners when we load a new image
+				loadedImage.load(pathView);
+
+				NFD_FreePathU8(path);
+				path = nullptr;
+
+			} break;
+			case NFD_ERROR:
+				ImGui::OpenPopup("NFD Error!");
+				nfdError = NFD_GetError();
+				break;
+			}
+
+			ImGui::CloseCurrentPopup();
+		}
+
+		ImGui::SetItemDefaultFocus();
+		ImGui::EndPopup();
+	}
+}
+
+inline void build_imgui_controls(const ImGuiIO& io, float width, float height) {
+	if (loadedImage.is_loaded()) {
+		ImGui::SetNextWindowSize(ImVec2(width / 2.0f, 2.0f * height / 3.0f), ImGuiCond_Appearing);
 		if (ImGui::Begin("Controls")) {
 			static constexpr float LONG_AXIS_PADDING = 32.0f;
 			static constexpr float HANDLE_RADIUS = 16.0f;
@@ -235,37 +366,33 @@ void app_frame() {
 		} ImGui::End();
 	}
 
-	// mouse control for panning and zooming
-	{
-		const ImVec2 mouseDelta = io.WantCaptureMouse ? ImVec2(0.0f, 0.0f) : io.MouseDelta;
-		const float deltaWheel = io.WantCaptureMouse ? 0.0f : io.MouseWheel;
-		const bool lmbDown = !io.WantCaptureMouse && io.MouseDown[0];
-		static constexpr float VIEWSCALE_FACTOR = 1.5f;
-		static constexpr float MAX_VIEW_SCALE = 4.0f;
+}
 
-		if (lmbDown) {
-			viewPos -= mouseDelta / viewScale;
-		}
+inline void handle_mouse_controls(const ImGuiIO& io, float width, float height) {
+	const ImVec2 mouseDelta = io.WantCaptureMouse ? ImVec2(0.0f, 0.0f) : io.MouseDelta;
+	const float deltaWheel = io.WantCaptureMouse ? 0.0f : io.MouseWheel;
+	const bool lmbDown = !io.WantCaptureMouse && io.MouseDown[0];
+	static constexpr float VIEWSCALE_FACTOR = 1.5f;
+	static constexpr float MAX_VIEW_SCALE = 4.0f;
 
-		viewPos = {
-			std::clamp(viewPos.x, -screenWidth * 2, screenWidth * 2),
-			std::clamp(viewPos.y, -screenHeight * 2, screenHeight * 2)
-		};
-
-		if (deltaWheel > 0) {
-			viewScale = std::clamp(viewScale * VIEWSCALE_FACTOR, 1.0f / MAX_VIEW_SCALE, MAX_VIEW_SCALE);
-		}
-		else if (deltaWheel < 0) {
-			viewScale = std::clamp(viewScale / VIEWSCALE_FACTOR, 1.0f / MAX_VIEW_SCALE, MAX_VIEW_SCALE);
-		}
-
-		printf("%f\n", deltaWheel);
+	if (lmbDown) {
+		viewPos -= mouseDelta / viewScale;
 	}
 
-	//
-	// Draw actual editor
-	//
+	viewPos = {
+		std::clamp(viewPos.x, -width * 2, width * 2),
+		std::clamp(viewPos.y, -height * 2, height * 2)
+	};
 
+	if (deltaWheel > 0) {
+		viewScale = std::clamp(viewScale * VIEWSCALE_FACTOR, 1.0f / MAX_VIEW_SCALE, MAX_VIEW_SCALE);
+	}
+	else if (deltaWheel < 0) {
+		viewScale = std::clamp(viewScale / VIEWSCALE_FACTOR, 1.0f / MAX_VIEW_SCALE, MAX_VIEW_SCALE);
+	}
+}
+
+inline void draw_editor_with_sgl(const ImGuiIO& io, float width, float height) {
 	sgl_defaults();
 	sgl_push_pipeline();
 	sgl_load_pipeline(mainPipeline);
@@ -274,10 +401,8 @@ void app_frame() {
 
 	sgl_matrix_mode_projection();
 	sgl_ortho(
-		-screenWidth / 2.0f,
-		screenWidth / 2.0f,
-		screenHeight / 2.0f,
-		-screenHeight / 2.0f,
+		-width / 2.0f, width / 2.0f,
+		height / 2.0f, -height / 2.0f,
 		-100.0f, 100.0f
 	);
 
@@ -289,11 +414,8 @@ void app_frame() {
 	{
 		sgl_c3f(1.0f, 1.0f, 1.0f);
 		sgl_begin_lines();
-		sgl_v2f(0.0f, -screenHeight); sgl_v2f(0.0f, screenHeight);
-		sgl_v2f(-screenWidth, 0.0f);  sgl_v2f(screenWidth, 0.0f);
-		sgl_end();
-
-		sgl_begin_quads();
+		sgl_v2f(0.0f, -height); sgl_v2f(0.0f, height);
+		sgl_v2f(-width, 0.0f);  sgl_v2f(width, 0.0f);
 		sgl_end();
 
 		if (loadedImage.data) {
@@ -301,108 +423,51 @@ void app_frame() {
 			sgl_texture(loadedImage.view, linearSampler);
 			sgl_begin_quads();
 
-			const float halfWidth = static_cast<float>(loadedImage.width) / 2.0f;
-			const float halfHeight = static_cast<float>(loadedImage.height) / 2.0f;
-			sgl_v2f_t2f(-halfWidth, -halfHeight, quadUv.tl.x, quadUv.tl.y);
-			sgl_v2f_t2f(-halfWidth, halfHeight, quadUv.bl.x, quadUv.bl.y);
-			sgl_v2f_t2f(halfWidth, halfHeight, quadUv.br.x, quadUv.br.y);
-			sgl_v2f_t2f(halfWidth, -halfHeight, quadUv.tr.x, quadUv.tr.y);
+			const float width = static_cast<float>(loadedImage.width);
+			const float height = static_cast<float>(loadedImage.height);
+			const float halfWidth = width / 2.0f;
+			const float halfHeight = height / 2.0f;
+
+			// step 1: find the normal vector
+
+			Vector3 points[4] = {
+				Vector3(0.0f, 0.0f, 0.0f),       // tl
+				Vector3(0.0f, height, 0.0f),     // bl
+				Vector3(width, height, 0.0f),    // br
+				Vector3(width, 0.0f, 0.0f)       // tr
+			};
+
+			for (int i = 0; i < 4; i++) {
+				points[i].x = quadUv.uvs[i].x * width;
+				points[i].y = quadUv.uvs[i].y * height;
+				points[i] -= Vector3(halfWidth, halfHeight, 0.0f);
+			}
+
+			Vector3 normal;
+			{
+				Vector3 top = (points[0] + points[3]) / 2.0f;
+				Vector3 bottom = (points[1] + points[2]) / 2.0f;
+				Vector3 upVector = (bottom - top).normalized();
+
+				Vector3 left = (points[0] + points[1]) / 2.0f;
+				Vector3 right = (points[2] + points[3]) / 2.0f;
+				Vector3 rightVector = (right - left).normalized();
+
+				normal = Vector3::cross(rightVector, upVector);
+				// printf("%f %f %f\n", rightVector.x, rightVector.y, rightVector.z);
+				// printf("%f %f %f\n", upVector.x, upVector.y, upVector.z);
+				// printf("%f %f %f\n", normal.x, normal.y, normal.z);
+				// printf("\n");
+			}
+
+			for (int i = 0; i < 4; i++) {
+				sgl_v3f_t2f(points[i].x, points[i].y, points[i].z, quadUv.uvs[i].x, quadUv.uvs[i].y);
+			}
+
 			sgl_end();
 			sgl_disable_texture();
 		}
 	}
 
 	sgl_pop_pipeline();
-}
-
-void app_cleanup() {
-	// TODO: implement this function after the main functionality is here...
-}
-
-//
-// INLINED FUNCTIONS - This is just done for the sake of cleanliness/organization...
-//                     might change later...
-//
-
-inline void setup_mainmenu_bar() {
-	ImGui::BeginMainMenuBar();
-
-	if (ImGui::MenuItem("Open Image")) {
-		constexpr nfdu8filteritem_t filterItem = {
-			.name = "Image Files",
-			.spec = "png,jpg,jpeg,gif,pic,ppm,pgm,tga"
-		};
-
-		nfdu8char_t* path = nullptr;
-		nfdresult_t result = NFD_OpenDialogU8(&path, &filterItem, 1, nullptr);
-
-		switch (result) {
-		case NFD_OKAY: {
-			std::string_view pathView(path);
-
-			// TODO: actually load the image
-			// maybe we'll want to reset the UV corners when we load a new image
-			loadedImage.load(pathView);
-
-			NFD_FreePathU8(path);
-			path = nullptr;
-
-		} break;
-		case NFD_ERROR:
-			ImGui::OpenPopup("NFD Error!");
-			nfdError = NFD_GetError();
-			break;
-		}
-	}
-
-	if (ImGui::MenuItem("Save Output")) {
-		ImGui::OpenPopup("Export Cropped Image");
-	}
-
-	ImGui::EndMainMenuBar();
-}
-
-inline void define_modals() {
-	// Define NFD Error popup modal
-	if (ImGui::BeginPopupModal("NFD Error!")) {
-		if (nfdError.length() > 0) {
-			ImGui::Text("Error message: %s", nfdError.c_str());
-		}
-
-		ImGui::Dummy(ImVec2(0, 120));
-
-		if (ImGui::Button("OK")) {
-			ImGui::CloseCurrentPopup();
-		}
-
-		ImGui::SetItemDefaultFocus();
-		ImGui::EndPopup();
-	}
-
-	if (ImGui::BeginPopupModal("Export Cropped Image")) {
-		static int outputFitlerChoice = 0;
-		constexpr int numOutputFilters = 2;
-		static const char* outputFilters[numOutputFilters] = {
-			"Nearest Neighbor",
-			"Bilinear"
-		};
-		static int outputResolution[2] = { 512, 512 };
-
-		ImGui::ListBox("Output Filters", &outputFitlerChoice, outputFilters, numOutputFilters);
-		ImGui::DragInt2("Output Resolution", outputResolution, 0, 0);
-
-		if (ImGui::Button("Save")) {
-			// TODO: actual saving logic, might want to move this into a function
-
-			ImGui::CloseCurrentPopup();
-		}
-
-		ImGui::SetItemDefaultFocus();
-		ImGui::EndPopup();
-	}
-
-	// Define STB image error popup modal
-	if (ImGui::BeginPopupModal("STB Image Error!")) {
-		ImGui::EndPopup();
-	}
 }

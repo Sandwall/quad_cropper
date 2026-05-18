@@ -1,0 +1,1 @@
+.\src\sokol-shdc --input .\src\shaders.glsl --output .\src\shaders.glsl.h --slang glsl430:hlsl5
