@@ -1,7 +1,16 @@
 #include "includes.hpp"
 #include "app.cxx"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 void init() {
+// just so that linalg.hpp print functions work properly
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+#endif
+
 	sg_setup(sg_desc{
 		.logger = {.func = slog_func },
 		.environment = sglue_environment(),
@@ -73,7 +82,8 @@ sapp_desc sokol_main(int argc, char* argv[]) {
 		.icon = {.sokol_default = true, },
 		.logger = {.func = slog_func},
 #ifdef _DEBUG
-		.win32_console_create = true,
+		.win32_console_create = false,
+		.win32_console_attach = true
 #endif
 	};
 }

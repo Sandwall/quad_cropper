@@ -14,21 +14,27 @@ So the main functionality is:
 
 When the image is open:
 - You can change the position of the 4 handles in the corners that determines
-  how the output image is sampled
+	how the output image is sampled
 
 When the save menu is open:
 - You can set the output resampling filter, as well as the output size.
 - You can edit a path to save to. This should come in the form of a textbox
-  that has the output path with a browse button next to it.
+	that has the output path with a browse button next to it.
 - Under all of that is an actual "Save" button that saves to the path, and a "Cancel" button
 
 */
+
+template<typename T, size_t N>
+struct Array {
+	T data[N];
+	operator T*() { return data; }
+	T& operator[](size_t i) { return data[i]; }
+};
 
 static constexpr nfdu8filteritem_t IMAGE_FILTER_ITEMS = {
 	.name = "Image Files",
 	.spec = "png,jpg,jpeg,gif,pic,ppm,pgm,tga"
 };
-
 
 struct ImageInfo {
 	sg_view view;
@@ -70,13 +76,13 @@ struct ImageInfo {
 			.num_mipmaps = 1,
 			.pixel_format = SG_PIXELFORMAT_RGBA8,
 			.data = imageData
-			});
-
+		});
 
 		view = sg_make_view(sg_view_desc{
 			.texture = {
 				.image = image
-			} });
+			}
+		});
 	}
 
 	void release() {
@@ -119,6 +125,16 @@ union QuadUv {
 		br = { 1.0f, 1.0f };
 		tr = { 1.0f, 0.0f };
 	}
+
+	Array<Vector3, 4> get_vec3() {
+		Array<Vector3, 4> av4;
+	
+		for(int i = 0; i < 4; i++) {
+			av4[i] = Vector3::homogeneous(uvs[i].x, uvs[i].y);
+		}
+		
+		return av4;
+	}
 } quadUv;
 
 std::string nfdError;
@@ -141,7 +157,7 @@ void app_init() {
 		.mag_filter = SG_FILTER_LINEAR,
 		.wrap_u = SG_WRAP_CLAMP_TO_EDGE,
 		.wrap_v = SG_WRAP_CLAMP_TO_EDGE
-		});
+	});
 
 	mainShader = sg_make_shader(mainShd_shader_desc(sg_query_backend()));
 
@@ -154,7 +170,7 @@ void app_init() {
 
 		// i'm drawing like 5 quads with SGL, culling isn't important...
 		.cull_mode = SG_CULLMODE_NONE,
-		});
+	});
 
 	viewScale = 1.0f;
 	viewPos = { 0.0f, 0.0f };
@@ -428,36 +444,28 @@ inline void draw_editor_with_sgl(const ImGuiIO& io, float width, float height) {
 			const float halfWidth = width / 2.0f;
 			const float halfHeight = height / 2.0f;
 
-			// step 1: find the normal vector
-
 			Vector3 points[4] = {
-				Vector3(0.0f, 0.0f, 0.0f),       // tl
-				Vector3(0.0f, height, 0.0f),     // bl
-				Vector3(width, height, 0.0f),    // br
-				Vector3(width, 0.0f, 0.0f)       // tr
+				Vector3::homogeneous(0.0f, 0.0f),       // tl
+				Vector3::homogeneous(0.0f, height),     // bl
+				Vector3::homogeneous(width, height),    // br
+				Vector3::homogeneous(width, 0.0f)       // tr
 			};
 
-			for (int i = 0; i < 4; i++) {
-				points[i].x = quadUv.uvs[i].x * width;
-				points[i].y = quadUv.uvs[i].y * height;
-				points[i] -= Vector3(halfWidth, halfHeight, 0.0f);
-			}
-
-			Vector3 normal;
+			Matrix3 homography;
 			{
-				Vector3 top = (points[0] + points[3]) / 2.0f;
-				Vector3 bottom = (points[1] + points[2]) / 2.0f;
-				Vector3 upVector = (bottom - top).normalized();
+				QuadUv squareQuadUv; // initialized to default square uvs
+				Array<Vector3, 4> quadPoints = quadUv.get_vec3();
+				Array<Vector3, 4> squareQuadPoints = squareQuadUv.get_vec3();
+				homography = compute_homography(quadPoints, squareQuadPoints);
+			}
+			
+			// TODO(sand): homography has been computed, now we just need to upload it to the GPU
+			// and write the shader such that it uses it
 
-				Vector3 left = (points[0] + points[1]) / 2.0f;
-				Vector3 right = (points[2] + points[3]) / 2.0f;
-				Vector3 rightVector = (right - left).normalized();
-
-				normal = Vector3::cross(rightVector, upVector);
-				// printf("%f %f %f\n", rightVector.x, rightVector.y, rightVector.z);
-				// printf("%f %f %f\n", upVector.x, upVector.y, upVector.z);
-				// printf("%f %f %f\n", normal.x, normal.y, normal.z);
-				// printf("\n");
+			for (int i = 0; i < 4; i++) {
+//				points[i].x = quadUv.uvs[i].x * width;
+//				points[i].y = quadUv.uvs[i].y * height;
+				points[i] -= Vector3{halfWidth, halfHeight, 0.0f};
 			}
 
 			for (int i = 0; i < 4; i++) {
