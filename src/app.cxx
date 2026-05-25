@@ -605,7 +605,6 @@ inline void draw_editor_with_sg(const ImGuiIO& io, float width, float height) {
 		Array<Vector3, 4> quadPoints = quadUv.get_vec3();
 		Array<Vector3, 4> squareQuadPoints = squareQuadUv.get_vec3();
 		renderer.fragUniforms.homography = compute_homography(quadPoints, squareQuadPoints);
-		renderer.fragUniforms.homography.print();
 
 		renderer.add_image(loadedImage);
 	}
