@@ -3,6 +3,9 @@
 #include "linalg.hpp"
 #include "shaders.glsl.h"
 
+#include <string.h>
+#include <stdlib.h>
+
 // This file is #included inside of main.cpp as part of a "jumbo" build,
 // which means any code here has access to the same stuff that's #included at the top of main.cpp
 
@@ -31,11 +34,7 @@ struct Array {
 	T& operator[](size_t i) { return data[i]; }
 };
 
-static constexpr nfdu8filteritem_t IMAGE_FILTER_ITEMS = {
-	.name = "Image Files",
-	.spec = "png,jpg,jpeg,gif,pic,ppm,pgm,tga"
-};
-
+// Wraps loading and reloading of images (just the main image being operated on)
 struct ImageInfo {
 	sg_view view;
 	sg_image image;
@@ -51,6 +50,7 @@ struct ImageInfo {
 
 	bool is_loaded() const { return nullptr != data; }
 
+	// loads an image from a filepath
 	void load(std::string_view path) {
 		release();
 
@@ -62,8 +62,8 @@ struct ImageInfo {
 		}
 
 		sg_image_data imageData;
-		imageData.subimage[0][0].ptr = data;
-		imageData.subimage[0][0].size = width * height * nChannels;
+		imageData.mip_levels[0].ptr = data;
+		imageData.mip_levels[0].size = width * height * nChannels;
 
 		image = sg_make_image(sg_image_desc{
 			.type = SG_IMAGETYPE_2D,
@@ -85,6 +85,43 @@ struct ImageInfo {
 		});
 	}
 
+	// loads an 8x8 white RGBA8 image
+	static ImageInfo load_default() {
+		ImageInfo info;
+		sg_image_data imageData;
+
+		info.width = 8;
+		info.height = 8;
+		info.nChannels = 4;
+
+		size_t size = info.width * info.height * info.nChannels;
+		void* ptr = malloc(size);
+		imageData.mip_levels[0].ptr = ptr;
+		imageData.mip_levels[0].size = size;
+		memset(ptr, 255, size);
+
+		info.image = sg_make_image(sg_image_desc{
+			.type = SG_IMAGETYPE_2D,
+			.usage = {
+				.immutable = true
+			},
+			.width = info.width,
+			.height = info.height,
+			.num_slices = 1,
+			.num_mipmaps = 1,
+			.pixel_format = SG_PIXELFORMAT_RGBA8,
+			.data = imageData
+		});
+
+		info.view = sg_make_view(sg_view_desc{
+			.texture = {
+				.image = info.image
+			}
+		});
+
+		return info;
+	}
+
 	void release() {
 		if (is_loaded()) {
 			stbi_image_free(data);
@@ -101,11 +138,167 @@ struct ImageInfo {
 			view = { 0 };
 		}
 	}
-} loadedImage;
+} loadedImage, defaultImage;
 
-sg_sampler linearSampler;
-sg_shader mainShader;
-sgl_pipeline mainPipeline;
+// doesn't do anything besides init/cleanup/hold sokol_gfx resources
+struct SgRenderer {
+	sg_shader mainShader;
+	sg_pipeline mainPipeline;
+	sg_sampler linearSampler;
+	sg_buffer vertexBuffer;
+
+	// NOTE: we'll bind the vertexBuffer and the linearSampler at the start
+	sg_bindings bindings;
+
+	struct Vertex {
+		Vector2 position;
+		Vector2 uv;
+		Vector4 color;
+	};
+
+	union Quad {
+		Vertex vertices[6];
+		struct {
+			Vertex tl;
+			Vertex bl;
+			Vertex br;
+			Vertex tl2;
+			Vertex br2;
+			Vertex tr;
+		};
+	};
+
+	Array<Quad, 4> quads;
+	int numQuads;
+
+	struct VertexParams {
+		Matrix4 mvp;
+	} vertexUniforms;
+
+	struct FragmentParams {
+		Matrix4 homography;
+	} fragUniforms;
+
+	static_assert(sizeof(VertexParams) == sizeof(VertexParams_t));
+	static_assert(sizeof(FragmentParams) == sizeof(FragmentParams_t));
+
+	void init() {
+		linearSampler = sg_make_sampler(sg_sampler_desc{
+			.min_filter = SG_FILTER_LINEAR,
+			.mag_filter = SG_FILTER_LINEAR,
+			.wrap_u = SG_WRAP_CLAMP_TO_EDGE,
+			.wrap_v = SG_WRAP_CLAMP_TO_EDGE
+		});
+
+		mainShader = sg_make_shader(mainShd_shader_desc(sg_query_backend()));
+
+		mainPipeline = sg_make_pipeline(sg_pipeline_desc{
+			.compute = false,
+			.shader = mainShader,
+			.layout = {
+				.attrs = {
+					{ 0, 0, SG_VERTEXFORMAT_FLOAT2 },
+					{ 0, 0, SG_VERTEXFORMAT_FLOAT2 },
+					{ 0, 0, SG_VERTEXFORMAT_FLOAT4 },
+				}
+			},
+			.depth = {
+				.compare = SG_COMPAREFUNC_LESS_EQUAL,
+				.write_enabled = true,
+			},
+			.primitive_type = SG_PRIMITIVETYPE_TRIANGLES,
+			.cull_mode = SG_CULLMODE_NONE, // i'm drawing like 5 quads, culling isn't important...
+		});
+
+		vertexBuffer = sg_make_buffer(sg_buffer_desc{
+			.size = sizeof(quads),
+			.usage = {
+				.vertex_buffer = true,
+				.index_buffer = false,
+				.storage_buffer = false,
+				.immutable = false,
+				.dynamic_update = false,
+				.stream_update = true,
+			}
+		});
+
+		bindings = {
+			.vertex_buffers = { vertexBuffer },
+			.samplers = { linearSampler }
+		};
+	}
+
+	void cleanup() {
+		sg_destroy_buffer(vertexBuffer);
+		sg_destroy_shader(mainShader);
+		sg_destroy_pipeline(mainPipeline);
+		sg_destroy_sampler(linearSampler);
+		memset(this, 0, sizeof(SgRenderer));
+	}
+
+	void start_frame() {
+		bindings.views[0] = defaultImage.view;
+		numQuads = 0;
+	}
+
+	void add_line(float thickness, Vector2 p0, Vector2 p1, Vector4 col = { 1.0f, 1.0f, 1.0f, 1.0f }) {
+		if(p0 == p1) return;
+
+		thickness = fabsf(thickness / 2.0f); // using half thickness since we add it to p0 and p1
+		Vector2 parallel = (p1 - p0).normalized();
+		Vector2 perpendicular = rotate(parallel, static_cast<float>(M_PI) / 2.0f).normalized() * thickness;
+		Quad& q = quads[numQuads++];
+
+		for(int i = 0; i < 6; i++) {
+			q.vertices[i].uv = { 0.0f, 0.0f };
+			q.vertices[i].color = col;
+		}
+
+		q.tl.position = p0 + perpendicular;
+		q.bl.position = p0 - perpendicular;
+		q.br.position = p1 + perpendicular;
+		q.tr.position = p1 - perpendicular;
+		q.tl2 = q.tl;
+		q.br2 = q.br;
+	}
+
+	void add_image(const ImageInfo& image) {
+		const float width = static_cast<float>(loadedImage.width);
+		const float height = static_cast<float>(loadedImage.height);
+		const float halfWidth = width / 2.0f;
+		const float halfHeight = height / 2.0f;
+		Quad& q = quads[numQuads++];
+
+		for(int i = 0; i < 6; i++) {
+			q.vertices[i].color = { 1.0f, 1.0f, 1.0f, 0.0f };
+		}
+
+		q.tl.uv = { 0.0f, 0.0f };
+		q.tl.position = { -halfWidth, -halfHeight };
+		q.bl.uv = { 0.0f, 1.0f };
+		q.bl.position = { -halfWidth, halfHeight };
+		q.br.uv = { 1.0f, 1.0f };
+		q.br.position = { halfWidth, halfHeight };
+		q.tr.uv = { 1.0f, 0.0f };
+		q.tr.position = { halfWidth, -halfHeight };
+		q.tl2 = q.tl;
+		q.br2 = q.br;
+
+		bindings.views[0] = image.view;
+	}
+
+	void draw() {
+		sg_update_buffer(vertexBuffer, { .ptr = quads, .size = sizeof(quads)});
+		bindings.vertex_buffers[0] = vertexBuffer;
+		
+		sg_apply_pipeline(mainPipeline);
+		sg_apply_bindings(bindings);
+		sg_apply_uniforms(UB_VertexParams, { .ptr = &vertexUniforms, .size = sizeof(VertexParams)});
+		sg_apply_uniforms(UB_FragmentParams, { .ptr = &fragUniforms, .size = sizeof(FragmentParams)});
+		sg_draw(0, numQuads * 6, 1);
+	}
+
+} renderer;
 
 float viewScale;
 ImVec2 viewPos;
@@ -128,11 +321,11 @@ union QuadUv {
 
 	Array<Vector3, 4> get_vec3() {
 		Array<Vector3, 4> av4;
-	
+
 		for(int i = 0; i < 4; i++) {
 			av4[i] = Vector3::homogeneous(uvs[i].x, uvs[i].y);
 		}
-		
+
 		return av4;
 	}
 } quadUv;
@@ -149,28 +342,12 @@ void build_imgui_modals();
 void build_imgui_export_modal();
 void build_imgui_controls(const ImGuiIO& io, float width, float height);
 void handle_mouse_controls(const ImGuiIO& io, float width, float height);
-void draw_editor_with_sgl(const ImGuiIO& io, float width, float height);
+void draw_editor_with_sg(const ImGuiIO& io, float width, float height);
 
 void app_init() {
-	linearSampler = sg_make_sampler(sg_sampler_desc{
-		.min_filter = SG_FILTER_LINEAR,
-		.mag_filter = SG_FILTER_LINEAR,
-		.wrap_u = SG_WRAP_CLAMP_TO_EDGE,
-		.wrap_v = SG_WRAP_CLAMP_TO_EDGE
-	});
+	renderer.init();
 
-	mainShader = sg_make_shader(mainShd_shader_desc(sg_query_backend()));
-
-	mainPipeline = sgl_make_pipeline(sg_pipeline_desc{
-		.shader = mainShader,
-		.depth = {
-			.compare = SG_COMPAREFUNC_LESS_EQUAL,
-			.write_enabled = true,
-		},
-
-		// i'm drawing like 5 quads with SGL, culling isn't important...
-		.cull_mode = SG_CULLMODE_NONE,
-	});
+	defaultImage = ImageInfo::load_default();
 
 	viewScale = 1.0f;
 	viewPos = { 0.0f, 0.0f };
@@ -189,19 +366,22 @@ void app_frame() {
 	build_imgui_modals();
 
 	handle_mouse_controls(io, screenWidth, screenHeight);
-	draw_editor_with_sgl(io, screenWidth, screenHeight);
+	draw_editor_with_sg(io, screenWidth, screenHeight);
 }
 
 void app_cleanup() {
-	sg_destroy_shader(mainShader);
-	sgl_destroy_pipeline(mainPipeline);
-	sg_destroy_sampler(linearSampler);
+	renderer.cleanup();
 }
 
 //
 // INLINED FUNCTIONS - This is just done for the sake of cleanliness/organization...
 //                     might change later...
 //
+
+static constexpr nfdu8filteritem_t IMAGE_FILTER_ITEMS = {
+	.name = "Image Files",
+	.spec = "png,jpg,jpeg,gif,pic,ppm,pgm,tga"
+};
 
 inline void setup_mainmenu_bar() {
 	ImGui::BeginMainMenuBar();
@@ -282,7 +462,6 @@ void build_imgui_export_modal() {
 			case NFD_OKAY: {
 				std::string_view pathView(path);
 
-				// TODO: actually load the image
 				// maybe we'll want to reset the UV corners when we load a new image
 				loadedImage.load(pathView);
 
@@ -311,6 +490,9 @@ inline void build_imgui_controls(const ImGuiIO& io, float width, float height) {
 			static constexpr float LONG_AXIS_PADDING = 32.0f;
 			static constexpr float HANDLE_RADIUS = 16.0f;
 
+			if(ImGui::Button("Reset to Default")) {
+				quadUv.reset();
+			}
 			ImGui::SliderFloat2("Top Left", &quadUv.tl.x, 0.0, 1.0);
 			ImGui::SliderFloat2("Bottom Left", &quadUv.bl.x, 0.0, 1.0);
 			ImGui::SliderFloat2("Bottom Right", &quadUv.br.x, 0.0, 1.0);
@@ -402,80 +584,36 @@ inline void handle_mouse_controls(const ImGuiIO& io, float width, float height) 
 
 	if (deltaWheel > 0) {
 		viewScale = std::clamp(viewScale * VIEWSCALE_FACTOR, 1.0f / MAX_VIEW_SCALE, MAX_VIEW_SCALE);
-	}
-	else if (deltaWheel < 0) {
+	} else if (deltaWheel < 0) {
 		viewScale = std::clamp(viewScale / VIEWSCALE_FACTOR, 1.0f / MAX_VIEW_SCALE, MAX_VIEW_SCALE);
 	}
 }
 
-inline void draw_editor_with_sgl(const ImGuiIO& io, float width, float height) {
-	sgl_defaults();
-	sgl_push_pipeline();
-	sgl_load_pipeline(mainPipeline);
-
-	// camera
-
-	sgl_matrix_mode_projection();
-	sgl_ortho(
-		-width / 2.0f, width / 2.0f,
-		height / 2.0f, -height / 2.0f,
-		-100.0f, 100.0f
-	);
-
-	sgl_matrix_mode_modelview();
-	sgl_scale(viewScale, viewScale, 1.0f);
-	sgl_translate(-viewPos.x, -viewPos.y, 0.0f);
+inline void draw_editor_with_sg(const ImGuiIO& io, float width, float height) {
+	renderer.start_frame();
+	renderer.vertexUniforms.mvp =
+		Matrix4::ortho(-width / 2.0f, width / 2.0f, height / 2.0f, -height / 2.0f, -100.0f, 100.0f)
+		* Matrix4::scale(viewScale, viewScale, 1.0f)
+		* Matrix4::translate(-viewPos.x, -viewPos.y, 0.0f);
 
 	// draw cross at origin and texture
-	{
-		sgl_c3f(1.0f, 1.0f, 1.0f);
-		sgl_begin_lines();
-		sgl_v2f(0.0f, -height); sgl_v2f(0.0f, height);
-		sgl_v2f(-width, 0.0f);  sgl_v2f(width, 0.0f);
-		sgl_end();
+	renderer.add_line(1.0f, {0.0f, -height}, {0.0f, height});
+	renderer.add_line(1.0f, {-width, 0.0f}, {width, 0.0f});
 
-		if (loadedImage.data) {
-			sgl_enable_texture();
-			sgl_texture(loadedImage.view, linearSampler);
-			sgl_begin_quads();
+	if (loadedImage.data) {
+		QuadUv squareQuadUv; // initialized to default square uvs
+		Array<Vector3, 4> quadPoints = quadUv.get_vec3();
+		Array<Vector3, 4> squareQuadPoints = squareQuadUv.get_vec3();
+		renderer.fragUniforms.homography = compute_homography(quadPoints, squareQuadPoints);
+		renderer.fragUniforms.homography.print();
 
-			const float width = static_cast<float>(loadedImage.width);
-			const float height = static_cast<float>(loadedImage.height);
-			const float halfWidth = width / 2.0f;
-			const float halfHeight = height / 2.0f;
-
-			Vector3 points[4] = {
-				Vector3::homogeneous(0.0f, 0.0f),       // tl
-				Vector3::homogeneous(0.0f, height),     // bl
-				Vector3::homogeneous(width, height),    // br
-				Vector3::homogeneous(width, 0.0f)       // tr
-			};
-
-			Matrix3 homography;
-			{
-				QuadUv squareQuadUv; // initialized to default square uvs
-				Array<Vector3, 4> quadPoints = quadUv.get_vec3();
-				Array<Vector3, 4> squareQuadPoints = squareQuadUv.get_vec3();
-				homography = compute_homography(quadPoints, squareQuadPoints);
-			}
-			
-			// TODO(sand): homography has been computed, now we just need to upload it to the GPU
-			// and write the shader such that it uses it
-
-			for (int i = 0; i < 4; i++) {
-//				points[i].x = quadUv.uvs[i].x * width;
-//				points[i].y = quadUv.uvs[i].y * height;
-				points[i] -= Vector3{halfWidth, halfHeight, 0.0f};
-			}
-
-			for (int i = 0; i < 4; i++) {
-				sgl_v3f_t2f(points[i].x, points[i].y, points[i].z, quadUv.uvs[i].x, quadUv.uvs[i].y);
-			}
-
-			sgl_end();
-			sgl_disable_texture();
-		}
+		renderer.add_image(loadedImage);
 	}
 
-	sgl_pop_pipeline();
+	// our matrices are stored in row-major order, and sokol_gfx expects column major order
+	// so we need to transpose them before uploading them to the GPU
+	renderer.vertexUniforms.mvp = renderer.vertexUniforms.mvp.transposed();
+	renderer.fragUniforms.homography = renderer.fragUniforms.homography.transposed();
+
+	renderer.draw();
 }

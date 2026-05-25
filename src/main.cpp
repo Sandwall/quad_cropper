@@ -1,31 +1,18 @@
 #include "includes.hpp"
 #include "app.cxx"
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
-
 void init() {
-// just so that linalg.hpp print functions work properly
-#ifdef _WIN32
-    SetConsoleOutputCP(CP_UTF8);
-#endif
-
 	sg_setup(sg_desc{
 		.logger = {.func = slog_func },
 		.environment = sglue_environment(),
-		});
-
-	sgl_setup(sgl_desc_t{
-		.logger = {.func = slog_func },
-		});
+	});
 
 	simgui_setup(simgui_desc_t{
 		.ini_filename = nullptr,
 		.logger = {.func = slog_func },
-		});
+	});
 
-	ImGui::GetIO().FontGlobalScale = 1.25f;
+	ImGui::GetIO().FontGlobalScale = 1.5f;
 
 	NFD_Init();
 	app_init();
@@ -37,33 +24,27 @@ void event(const sapp_event* event) {
 
 void frame() {
 	simgui_new_frame({ sapp_width(), sapp_height(), sapp_frame_duration(), sapp_dpi_scale() });
-	app_frame();
 
 	sg_begin_pass(sg_pass{
 		.action = sg_pass_action{
 			.colors = {{
-					.load_action = SG_LOADACTION_CLEAR,
-					.clear_value = { 0.20f, 0.20f, 0.20f, 1.0f },
-				}},
-			},
-			.swapchain = sglue_swapchain()
-		});
+				.load_action = SG_LOADACTION_CLEAR,
+				.clear_value = { 0.20f, 0.20f, 0.20f, 1.0f },
+			}},
+		},
+		.swapchain = sglue_swapchain()
+	});
 
-
-	sgl_draw();
+	app_frame();
 	simgui_render();
-
 	sg_end_pass();
 	sg_commit();
 }
 
 void cleanup() {
-
 	app_cleanup();
-
 	NFD_Quit();
 	simgui_shutdown();
-	sgl_shutdown();
 	sg_shutdown();
 }
 
@@ -82,8 +63,11 @@ sapp_desc sokol_main(int argc, char* argv[]) {
 		.icon = {.sokol_default = true, },
 		.logger = {.func = slog_func},
 #ifdef _DEBUG
-		.win32_console_create = false,
-		.win32_console_attach = true
+		.win32 = {
+			.console_utf8 = true,
+			.console_create = false,
+			.console_attach = true
+		}
 #endif
 	};
 }
