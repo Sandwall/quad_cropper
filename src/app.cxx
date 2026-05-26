@@ -290,7 +290,7 @@ struct SgRenderer {
 	void draw() {
 		sg_update_buffer(vertexBuffer, { .ptr = quads, .size = sizeof(quads)});
 		bindings.vertex_buffers[0] = vertexBuffer;
-		
+
 		sg_apply_pipeline(mainPipeline);
 		sg_apply_bindings(bindings);
 		sg_apply_uniforms(UB_VertexParams, { .ptr = &vertexUniforms, .size = sizeof(VertexParams)});
@@ -319,11 +319,11 @@ union QuadUv {
 		tr = { 1.0f, 0.0f };
 	}
 
-	Array<Vector3, 4> get_vec3() {
-		Array<Vector3, 4> av4;
+	Array<Vector2, 4> get_vec2() {
+		Array<Vector2, 4> av4;
 
 		for(int i = 0; i < 4; i++) {
-			av4[i] = Vector3::homogeneous(uvs[i].x, uvs[i].y);
+			av4[i] = { uvs[i].x, uvs[i].y };
 		}
 
 		return av4;
@@ -483,8 +483,30 @@ void build_imgui_export_modal() {
 	}
 }
 
+// we'll just reset this in the frame, it's used in
+int numMatricesPrintedInFrame = 0;
+
+template<int Rows, int Cols>
+static void print_matrix_imgui(const Matrix<Rows, Cols>& matrix) {
+	ImGui::PushID(numMatricesPrintedInFrame++);
+	if (ImGui::BeginTable("MatrixTable", Cols)) {
+		for(int row = 0; row < Rows; row++) {
+			ImGui::TableNextRow();
+			for(int col = 0; col < Cols; col++) {
+				ImGui::TableSetColumnIndex(col);
+				ImGui::Text("%.3f", matrix.get(row, col));
+			}
+		}
+		ImGui::EndTable();
+	}
+	ImGui::PopID();
+}
+
 inline void build_imgui_controls(const ImGuiIO& io, float width, float height) {
+	numMatricesPrintedInFrame = 0;
+
 	if (loadedImage.is_loaded()) {
+		// Controls Winodw
 		ImGui::SetNextWindowSize(ImVec2(width / 2.0f, 2.0f * height / 3.0f), ImGuiCond_Appearing);
 		if (ImGui::Begin("Controls")) {
 			static constexpr float LONG_AXIS_PADDING = 32.0f;
@@ -504,6 +526,7 @@ inline void build_imgui_controls(const ImGuiIO& io, float width, float height) {
 
 			ImDrawList* drawList = ImGui::GetWindowDrawList();
 			drawList->AddRectFilled(editorTopLeft, editorBotRight, IM_COL32(50, 50, 50, 255));
+
 			drawList->AddRect(editorTopLeft, editorBotRight, IM_COL32(255, 255, 255, 255));
 			drawList->PushClipRect(editorTopLeft, editorBotRight, true);
 			ImGui::InvisibleButton("uv_editor_widget", editorSize, ImGuiButtonFlags_MouseButtonLeft);
@@ -519,6 +542,8 @@ inline void build_imgui_controls(const ImGuiIO& io, float width, float height) {
 
 			ImVec2 rectTopLeft = editorTopLeft + ImVec2((editorSize.x - rectSize.x) / 2.0f, (editorSize.y - rectSize.y) / 2.0f);
 			ImVec2 rectBotRight = rectTopLeft + rectSize;
+			drawList->AddImage(simgui_imtextureid(loadedImage.view), rectTopLeft, rectBotRight);
+
 			drawList->AddLine(ImVec2(rectTopLeft.x, editorTopLeft.y), ImVec2(rectTopLeft.x, editorBotRight.y), IM_COL32(100, 100, 100, 255), 1.0f);
 			drawList->AddLine(ImVec2(rectBotRight.x, editorTopLeft.y), ImVec2(rectBotRight.x, editorBotRight.y), IM_COL32(100, 100, 100, 255), 1.0f);
 			drawList->AddLine(ImVec2(editorTopLeft.x, rectTopLeft.y), ImVec2(editorBotRight.x, rectTopLeft.y), IM_COL32(100, 100, 100, 255), 1.0f);
@@ -562,6 +587,12 @@ inline void build_imgui_controls(const ImGuiIO& io, float width, float height) {
 
 			drawList->PopClipRect();
 		} ImGui::End();
+
+		// Debug Info Window
+		if(ImGui::Begin("Debug")) {
+			ImGui::Text("Homography Matrix");
+			print_matrix_imgui(renderer.fragUniforms.homography);
+		} ImGui::End();
 	}
 
 }
@@ -602,8 +633,8 @@ inline void draw_editor_with_sg(const ImGuiIO& io, float width, float height) {
 
 	if (loadedImage.data) {
 		QuadUv squareQuadUv; // initialized to default square uvs
-		Array<Vector3, 4> quadPoints = quadUv.get_vec3();
-		Array<Vector3, 4> squareQuadPoints = squareQuadUv.get_vec3();
+		Array<Vector2, 4> quadPoints = quadUv.get_vec2();
+		Array<Vector2, 4> squareQuadPoints = squareQuadUv.get_vec2();
 		renderer.fragUniforms.homography = compute_homography(quadPoints, squareQuadPoints);
 
 		renderer.add_image(loadedImage);

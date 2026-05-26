@@ -220,6 +220,7 @@ template <int Rows, int Cols>
 struct Matrix {
 	static constexpr int NumRows = Rows;
 	static constexpr int NumCols = Cols;
+	static constexpr int MinDim = Rows < Cols ? Rows : Cols;
 	union {
 		float data[Rows * Cols];
 		float rows[Rows][Cols];
@@ -283,8 +284,6 @@ struct Matrix {
 
 	void set_identity() {
 		set_zero();
-		constexpr int MinDim = Rows < Cols ? Rows : Cols;
-
 		for (int i = 0; i < MinDim; i++) {
 			get(i, i) = 1.0f;
 		}
@@ -345,6 +344,18 @@ struct Matrix {
 	void set_column(const Vector<Rows>& column, int col) {
 		for(int i = 0; i < Rows; i++)
 			get(i, col) = column[i];
+	}
+	
+	Vector<Cols> get_row(int rowIdx) {
+		Vector<Cols> row;
+		for(int i = 0; i < Rows; i++)
+			row[i] = get(rowIdx, i);
+		return row;
+	}
+	
+	void set_row(const Vector<Cols>& row, int rowIdx) {
+		for(int i = 0; i < Rows; i++)
+			get(rowIdx, i) = row[i];
 	}
 
 	float& get(int row, int col) { return data[(row * Cols) + col]; }
@@ -502,7 +513,7 @@ struct Matrix {
 
 			return *this;
 		}
-		}
+	}
 
 	Matrix& operator*=(float scalar) {
 		for (int i = 0; i < Rows * Cols; i++) {
@@ -552,7 +563,6 @@ struct Matrix {
 		}
 		return result;
 	}
-
 };
 
 template <int Rows, int Cols>
@@ -576,26 +586,141 @@ Vector2 rotate(const Vector2& vec, float angle) {
 // meat n potatoes
 //
 
-// We want a matrix A that we can multiply square UVs by to get our mutated quad UVs.
-// In other words, we'll supply the matrix outputted by this function to frag shader
-// and in the frag shader we multiply the *regular* UVs by this matrix
-// should be passed in order of TL BL BR TR
-Matrix4 compute_homography(const Vector3 mutated[4], const Vector3 square[4]) {
-	// we can model this as Y=AX, hence if we take the right pseudo inverse of X to be Xp such that XXp=I
-	// then we can multiply it on both sides to get YXp=A
-	Matrix<3, 4> Y, X;
-	for(int i = 0; i < 4; i++) {
-		Y.set_column(mutated[i], i);
-		X.set_column(square[i], i);
-	}
+// TODO: As of right now, it turns out that we actually aren't using DLT to compute a proper homography and it's screwing up our output.
+//
+// What we're solving for here instead is an affine transformation in homogeneous coordinates,
+// and using the matrix output here will NOT lead to a projective transformation like the one we're looking for.
+// If anything, we've changed the issue of the output looking like 2 affine transformations for the UVs on each triangle
+// to a single affine transformation on the UVs across the entire quad.
+//
+// Notes from this page should be able to explain the goal: https://www.cs.cmu.edu/~16385/s17/Slides/10.2_2D_Alignment__DLT.pdf
+//
+// So to properly compute a homography using DLT, we need to also consider a per-pointwise-correspondence scaling factor alpha_i.
+// See the following case for any pointwise correspondence (x, y) --> (x', y'), where xy is the square UVs and x'y' is the mutated quad UVs
+//
+// | x' |         | h00 h01 h02 |   | x |
+// | y' | = alpha | h10 h11 h12 | * | y |
+// | 1  |         | h20 h21 h22 |   | 1 |
+//
+// Or written as X' = alpha * A * X
+//
+// This is the equation for a single pair of points. We will first convert this matrix equation to a system of equations.
+// x' = alpha(h00 * x + h01 * y + h02)
+// y' = alpha(h10 * x + h11 * y + h12)
+// 1  = alpha(h20 * x + h21 * y + h22)
+//
+// Swap the order of the last one to get alpha(h20 * x + h21 * y + h22) = 1 and multiply the first two equations by this to get:
+// x' * alpha(h20 * x + h21 * y + h22) = alpha(h00 * x + h01 * y + h02)
+// y' * alpha(h20 * x + h21 * y + h22) = alpha(h10 * x + h11 * y + h12)
+//
+// Doing this lets us divide alpha on both sides to get:
+// x' * (h20 * x + h21 * y + h22) = h00 * x + h01 * y + h02
+// y' * (h20 * x + h21 * y + h22) = h10 * x + h11 * y + h12
+//
+// This is the form we want since now we don't have to worry about the implicit scale factor anymore.
+//
+// Now move all of the terms on the right hand side to the left, to get a homogeneous system of 2 equations:
+// (note that I'm also distributing the terms in the parentheses)
+// h20xx' + h21yx' + h22x' - h00x - h01y - h02 = 0
+// h20xy' + h21yy' + h22y' - h10x - h11y - h12 = 0
+//
+// Now, flatten the homography matrix (A) into a vector (H) containing the same entries (transposed here since it should be a column vector):
+// Ht = | h00 h01 h02 h10 h11 h12 h20 h21 h22 |
+//
+// And rewrite the 2 equations above as a 2x9 matrix times H as follows
+//
+// | -x -y -1  0  0  0 xx' yx' x'|   | h00 |
+// |  0  0  0 -x -y -1 xy' yy' y'| * | h01 | = 0
+//                                   | h02 |
+//                                   | h10 |
+//                                   | h11 |
+//                                   | h12 |
+//                                   | h20 |
+//                                   | h21 |
+//                                   | h22 |
+//
+// And from here, we just need to stack 4 of these 2x9 matrices vertically (one for each correspondence) to get a single 8x9 matrix
+// (Let's call it D, since it's our DLT matrix)
+//
+// In the end, the equation that we want to solve is D * H = 0, which we do by taking the SVD of D.
+// Taking this SVD gives us D = U * Sigma * Vt.
+//
+// From here, we want to find the column of Sigma with the smallest entry along the diagonal (these entries are singular values)
+// Let this column be the ith column of Sigma. Our solution H will then be the ith row of Vt, or the ith column of V (we'd have to transpose Vt).
+//
+// Explanation:
+// H can take on any value in the Null space of D (since Null space is just all values x such that Dx = 0)
+// Using the dimension theorem, recall that for D, which is an 8x9 matrix, rank(D) + nullity(D) = 9
+// Since there are 8 rows, that means that the maximum possible rank is 8, and this means that the minimum possible nullity is 1.
+// So we'll always have at least a single basis vector in the Null space.
+// Going back to entries of Sigma along the diagonal, each of these entries corresponds to a basis vector of the Null space.
+// And that's why picking a column of Sigma with a (close to) zero diagonal entry will should give us the best solution available.
+//
+// This is strictly the solution obtained using SVD, but I suspect we can get similar results using row-reduction.
+// This is beacuse our DLT system only has 4 points, meaning that the D matrix is 8x9, and thus it is underdetermined.
+// Solving an underdetermined system is possible 
+// If row-reduction doesn't work, we'll have to implement Singular Value Decomposition, and we can try the One-Sided Jacobi algorithm:
+//
+// Therefore... TODO:
+// - build the DLT matrix in the compute_homography function
+// - row reduction is already implemented (through the inversed function), we just need to repurpose it for solving a homogeneous system
+// - probably rewrite this blurb/section to be a bit shorter and less repetetive
+// - if the row-reduction method doesn't work, then we need to implement SVD... and that'll take time
+// - 
 
-	Matrix<4, 3> Xt = X.transposed();
-
-	// so now compute pseudo inverse of X
-	Matrix<4, 3> Xp = Xt * (X * Xt).inversed();
+template<int Rows, int Cols>
+struct SvdResult {
+	Matrix<Rows, Rows> U;     // left singular vectors
+	Matrix<Rows, Cols> Sigma; // contains the singular values
+	Matrix<Cols, Cols> Vt;    // right singular vectors (in rows)
 	
-	// and use it to get the homography since A = YXp
-	Matrix3 homography = Y * Xp;
+	// generates a Jacobi rotation matrix J(p, q, theta)
+	template<int N>
+	static Matrix<N, N> jacobi_rotation(int p, int q, float theta) {
+		Matrix<N, N> matrix = Matrix<N, N>::identity();
+		
+		matrix.get(p, p) = cosf(theta);
+		matrix.get(q, q) = matrix.get(p, p);
+		matrix.get(p, q) = sinf(theta);
+		matrix.get(q, p) = -matrix.get(p, q);
+		
+		return matrix;
+	}
+	
+	// computes the singular value decomposition of a matrix using the one-sided Jacobi algorithm
+	static SvdResult compute(const Matrix<Rows, Cols> matrix) {
+		SvdResult result;
+		
+		// TODO...
+		
+		return result;
+	}
+};
+
+// Usage: mutated should be the quad UVs set by the program, and original should be a fresh set of square UVs
+//        additionally, pass them in order of TL BL BR TR
+Matrix4 compute_homography(const Vector2 mutated[4], const Vector2 original[4]) {
+	// supposedly it's a good idea to normalize the mutated and original points so that both of their centroids are at (0, 0)
+	// and their average distance from the origin is sqrt(2). I'm not sure, so we'll test it once this function is implemented.
+
+	Matrix<8, 9> dltMatrix;
+
+	// TODO: set entries of dltMatrix using mutated and original vectors ...
+	
+	// TODO: attempt row reduction before SVD
+	SvdResult svd = SvdResult::compute(dltMatrix);
+	Vector<9> homographyVector = svd.Vt.get_row(8); // maybe we'll have to search for the smallest diagonal entry in Sigma... check later
+	
+	Matrix3 homography; // no need to initialize on declaration, we do that below
+	homography.get(0, 0) = homographyVector[0];
+	homography.get(0, 1) = homographyVector[1];
+	homography.get(0, 2) = homographyVector[2];
+	homography.get(1, 0) = homographyVector[3];
+	homography.get(1, 1) = homographyVector[4];
+	homography.get(1, 2) = homographyVector[5];
+	homography.get(2, 0) = homographyVector[6];
+	homography.get(2, 1) = homographyVector[7];
+	homography.get(2, 2) = homographyVector[8];
 
 	// this is purely a sokol_gfx workaround, since it sokol-shdc (shader compiler) doesn't allow for mat3
 	// so we need to embed the 3x3 homography in a 4x4 matrix
@@ -622,3 +747,23 @@ Matrix4 compute_homography(const Vector3 mutated[4], const Vector3 square[4]) {
 
 	return embeddedHomography;
 }
+
+/*
+Matrix3 compute_affine(const Vector2 mutated[4], const Vector2 square[4]) { // should be passed in order of TL BL BR TR
+	// We want a matrix A that we can multiply square UVs (x,y) by to get our mutated quad UVs (x',y')
+	// we can model this as Y=AX... if we take the right pseudo inverse of X to be Xp such that XXp=I
+	// then we can multiply it on both sides to get YXp=A
+	Matrix<3, 4> Y, X;
+	for(int i = 0; i < 4; i++) {
+		Y.set_column(Vector3::homogeneous(mutated[i].x(), mutated[i].y()), i);
+		X.set_column(Vector3::homogeneous(square[i].x(), square[i].y()), i);
+	}
+
+	Matrix<4, 3> Xt = X.transposed();
+
+	// so now compute pseudo inverse of X
+	Matrix<4, 3> Xp = Xt * (X * Xt).inversed();
+
+	return Y * Xp; // since A = YXp
+}
+*/
