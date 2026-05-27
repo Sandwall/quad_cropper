@@ -26,18 +26,33 @@ layout(binding=0) uniform sampler smp;
 layout(binding=1) uniform FragmentParams {
 	// frickin sokol-shdc doesn't have the mat3 type
 	mat4 homography;
+
+	// these parameters are for normalization
+	vec2 squareCentroid;
+	float squareMagnitude;
+
+	vec2 mutatedCentroid;
+	float mutatedMagnitude;
 };
 
-in vec4 uv;
+in vec2 uv;
 in vec4 color;
 out vec4 frag_color;
 
 void main() {
-	vec4 regularUv = homography * vec4(uv, 0.0, 1.0);
-	regularUv.x /= regularUv.w;
-	regularUv.y /= regularUv.w;
+	// normalize the square/input UVs
+	vec4 normalizedUv = vec4((uv - squareCentroid) / squareMagnitude, 0.0, 1.0);
 
-	vec4 texCol = texture(sampler2D(tex, smp), regularUv.xy);
+	// now apply the homography to the square UVs and do the perspective divide
+	vec4 projectedUv = homography * normalizedUv;
+	projectedUv.x /= projectedUv.w;
+	projectedUv.y /= projectedUv.w;
+	projectedUv.w = 1.0f;
+
+	// now reverse the normalization/denormalize the mutated/output UVs
+	projectedUv.xy = (projectedUv.xy * mutatedMagnitude) + mutatedCentroid;
+
+	vec4 texCol = texture(sampler2D(tex, smp), projectedUv.xy);
 	frag_color = mix(texCol, vec4(color.xyz, 1.0), color.a);
 }
 @end

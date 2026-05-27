@@ -30,6 +30,14 @@ template <int N> struct Vector {
 		}
 	}
 
+	void fix_zero() {
+		for (int i = 0; i < N; i++) {
+			if(float_is_zero(data[i])) {
+				data[i] = 0.0f;
+			}
+		}
+	}
+
 	void print(FILE* outFile = stdout, bool newLine = true) {
 		if (1 == Size)
 			fprintf(outFile, "[ %f ] ", data[0]);
@@ -289,6 +297,14 @@ struct Matrix {
 		}
 	}
 
+	void fix_zero() {
+		for (int i = 0; i < Rows * Cols; i++) {
+			if(float_is_zero(data[i])) {
+				data[i] = 0.0f;
+			}
+		}
+	}
+
 	void print(FILE* outFile = stdout, bool newLine = true) {
 		if (1 == Rows && 1 == Cols) {
 			fprintf(outFile, "[ %f ] ", get(0, 0));
@@ -345,14 +361,14 @@ struct Matrix {
 		for(int i = 0; i < Rows; i++)
 			get(i, col) = column[i];
 	}
-	
+
 	Vector<Cols> get_row(int rowIdx) {
 		Vector<Cols> row;
 		for(int i = 0; i < Rows; i++)
 			row[i] = get(rowIdx, i);
 		return row;
 	}
-	
+
 	void set_row(const Vector<Cols>& row, int rowIdx) {
 		for(int i = 0; i < Rows; i++)
 			get(rowIdx, i) = row[i];
@@ -435,7 +451,7 @@ struct Matrix {
 			float pivotNormalizationFactor = 1.0f / current.get(pivotRow, pivotCol);
 			current.row_multiply(pivotRow, pivotNormalizationFactor);
 			inverse.row_multiply(pivotRow, pivotNormalizationFactor);
-			
+
 			// next, we need to cancel out all nonzero entries above and below (pivotRow, pivotCol)
 			for(int cancelRow = 0; cancelRow < N; cancelRow++) {
 				if(cancelRow == pivotRow) continue;
@@ -451,6 +467,7 @@ struct Matrix {
 			pivotRow++;
 		}
 
+		inverse.fix_zero();
 		return inverse;
 	}
 
@@ -586,13 +603,6 @@ Vector2 rotate(const Vector2& vec, float angle) {
 // meat n potatoes
 //
 
-// TODO: As of right now, it turns out that we actually aren't using DLT to compute a proper homography and it's screwing up our output.
-//
-// What we're solving for here instead is an affine transformation in homogeneous coordinates,
-// and using the matrix output here will NOT lead to a projective transformation like the one we're looking for.
-// If anything, we've changed the issue of the output looking like 2 affine transformations for the UVs on each triangle
-// to a single affine transformation on the UVs across the entire quad.
-//
 // Notes from this page should be able to explain the goal: https://www.cs.cmu.edu/~16385/s17/Slides/10.2_2D_Alignment__DLT.pdf
 //
 // So to properly compute a homography using DLT, we need to also consider a per-pointwise-correspondence scaling factor alpha_i.
@@ -645,54 +655,60 @@ Vector2 rotate(const Vector2& vec, float angle) {
 // In the end, the equation that we want to solve is D * H = 0, which we do by taking the SVD of D.
 // Taking this SVD gives us D = U * Sigma * Vt.
 //
-// From here, we want to find the column of Sigma with the smallest entry along the diagonal (these entries are singular values)
-// Let this column be the ith column of Sigma. Our solution H will then be the ith row of Vt, or the ith column of V (we'd have to transpose Vt).
+// From here:
+// - If m <  n ~ We can just take the nth row of Vt to be our solution H.
+// - If m >= n ~ We find the column of Sigma with the smallest singular values along the diagonal. Denote this as column i.
+//   Our solution H will then be the ith row of Vt, or the ith column of V (we'd have to transpose Vt).
 //
 // Explanation:
-// H can take on any value in the Null space of D (since Null space is just all values x such that Dx = 0)
-// Using the dimension theorem, recall that for D, which is an 8x9 matrix, rank(D) + nullity(D) = 9
-// Since there are 8 rows, that means that the maximum possible rank is 8, and this means that the minimum possible nullity is 1.
-// So we'll always have at least a single basis vector in the Null space.
-// Going back to entries of Sigma along the diagonal, each of these entries corresponds to a basis vector of the Null space.
-// And that's why picking a column of Sigma with a (close to) zero diagonal entry will should give us the best solution available.
+// H can take on any value in the Null space of D (since Null space is just all values x such that Dx = 0).
+// Using the dimension theorem, recall that for D, which is an 8x9 matrix, rank(D) + nullity(D) = 9.
+// Since there are 8 rows, that means that the maximum possible rank is 8, and the minimum possible nullity is 1.
+// This means that we'll always have at least a single basis vector in the Null space, which we want to take as our solution H.
 //
-// This is strictly the solution obtained using SVD, but I suspect we can get similar results using row-reduction.
-// This is beacuse our DLT system only has 4 points, meaning that the D matrix is 8x9, and thus it is underdetermined.
-// Solving an underdetermined system is possible 
-// If row-reduction doesn't work, we'll have to implement Singular Value Decomposition, and we can try the One-Sided Jacobi algorithm:
+// Going to the use of SVD, since there are 8 rows and 9 columns in Sigma, there are only 8 singular values in Sigma,
+// meaning that all remaining singular values (or more specifically, the 9th singular value) will automatically be 0.
+// This 9th singular value corresponds to the basis vector H of the Null space that is always present
+// (and we can obtain it by taking the 9th right singular vector from the SVD).
+//
+// We can always have more singular values that are 0, meaning more basis vectors in the Null space,
+// but this isn't really all that important unless we increase the number of pointwise correspondences.
+// In that scenario, our system will be overdetermined, and we'll have to instead select for the smallest singular value
+// as it'll give us the "best" solution out of the bunch.
 //
 // Therefore... TODO:
-// - build the DLT matrix in the compute_homography function
-// - row reduction is already implemented (through the inversed function), we just need to repurpose it for solving a homogeneous system
 // - probably rewrite this blurb/section to be a bit shorter and less repetetive
-// - if the row-reduction method doesn't work, then we need to implement SVD... and that'll take time
-// - 
+// - implement SVD, which means look up the Golub-Kahan-Reisch algorithm... should be fine for an 8x9 matrix
 
 template<int Rows, int Cols>
 struct SvdResult {
+	// Note that if for we compute Sigma and Vt, but not U, we can simply get U by taking
+	// u_i = Av_i / sigma_i
+	// This comes from the fact that A * v_i = sigma_i * u_i
 	Matrix<Rows, Rows> U;     // left singular vectors
 	Matrix<Rows, Cols> Sigma; // contains the singular values
 	Matrix<Cols, Cols> Vt;    // right singular vectors (in rows)
-	
-	// generates a Jacobi rotation matrix J(p, q, theta)
+
+	// NOTE: This was from when I was considering using the One-Sided Jacobi algorithm for calculating SVD
+	// I'm not sure if we'll need it or something similar to implement the current algorithm, so I'll leave it for now.
 	template<int N>
 	static Matrix<N, N> jacobi_rotation(int p, int q, float theta) {
 		Matrix<N, N> matrix = Matrix<N, N>::identity();
-		
+
 		matrix.get(p, p) = cosf(theta);
 		matrix.get(q, q) = matrix.get(p, p);
 		matrix.get(p, q) = sinf(theta);
 		matrix.get(q, p) = -matrix.get(p, q);
-		
+
 		return matrix;
 	}
-	
-	// computes the singular value decomposition of a matrix using the one-sided Jacobi algorithm
-	static SvdResult compute(const Matrix<Rows, Cols> matrix) {
+
+	// computes the singular value decomposition of a matrix using the Golub-Kahan-Reisch algorithm
+	static SvdResult compute(const Matrix<Rows, Cols>& matrix) {
 		SvdResult result;
-		
+
 		// TODO...
-		
+
 		return result;
 	}
 };
@@ -700,17 +716,55 @@ struct SvdResult {
 // Usage: mutated should be the quad UVs set by the program, and original should be a fresh set of square UVs
 //        additionally, pass them in order of TL BL BR TR
 Matrix4 compute_homography(const Vector2 mutated[4], const Vector2 original[4]) {
-	// supposedly it's a good idea to normalize the mutated and original points so that both of their centroids are at (0, 0)
-	// and their average distance from the origin is sqrt(2). I'm not sure, so we'll test it once this function is implemented.
-
 	Matrix<8, 9> dltMatrix;
+	dltMatrix.set_zero();
 
-	// TODO: set entries of dltMatrix using mutated and original vectors ...
-	
-	// TODO: attempt row reduction before SVD
-	SvdResult svd = SvdResult::compute(dltMatrix);
-	Vector<9> homographyVector = svd.Vt.get_row(8); // maybe we'll have to search for the smallest diagonal entry in Sigma... check later
-	
+	for(int i = 0; i < 4; i++) {
+		// | -x -y -1  0  0  0 xx' yx' x' |
+		// |  0  0  0 -x -y -1 xy' yy' y' |
+
+		int row1 = (i * 2);
+		int row2 = (i * 2) + 1;
+		const float x = original[i].x();
+		const float y = original[i].y();
+		const float xp = mutated[i].x();
+		const float yp = mutated[i].y();
+
+		dltMatrix.get(row1, 0) = -x;
+		dltMatrix.get(row1, 1) = -y;
+		dltMatrix.get(row1, 2) = -1.0f;
+		dltMatrix.get(row1, 6) = x * xp;
+		dltMatrix.get(row1, 7) = y * xp;
+		dltMatrix.get(row1, 8) = xp;
+
+		dltMatrix.get(row2, 3) = -x;
+		dltMatrix.get(row2, 4) = -y;
+		dltMatrix.get(row2, 5) = -1.0f;
+		dltMatrix.get(row2, 6) = x * yp;
+		dltMatrix.get(row2, 7) = y * yp;
+		dltMatrix.get(row2, 8) = yp;
+	}
+
+	// Explanation for why our homography is obtained from the 9th row of svd.Vt:
+	//
+	// Since the 8x9 matrix represents an underdetermined system, we only have 8 singular values in svd.Sigma.
+	// This means that the 9th one is automatically zero by default.
+	// Recall that the relationship between right and left singular vectors is given by A * v_i = sigma_i * u_i.
+	// So if sigma_9 = 0, then this implies Av_9 = 0, and thus v_9 should be a nonzero vector that A maps to 0.
+	// This means that v_9 solves the homogeneous equation Ax=0.
+	//
+	// Note that for over-determined systems (systems with more than 4 pointwise correspondences)
+	// We would have to look through the 9 singular values for the smallest one, and pick that row from svd.Vt.
+	//
+	// Additionally, if all we're after is the right singular vectors of A, then it's the same thing as
+	// diagonalizing AtA, since the eigenvalues give us squared singular values and the eigenvectors
+	// are just the right singular vectors. We wouldn't do this on a computer though, since it results in precision loss.
+	//
+
+	auto svd = SvdResult<8, 9>::compute(dltMatrix);
+	Vector<9> homographyVector = svd.Vt.get_row(8);
+
+	// now we unroll the flattened 9-vector of the homography entries into a 3x3 homography matrix
 	Matrix3 homography; // no need to initialize on declaration, we do that below
 	homography.get(0, 0) = homographyVector[0];
 	homography.get(0, 1) = homographyVector[1];
@@ -730,11 +784,11 @@ Matrix4 compute_homography(const Vector2 mutated[4], const Vector2 original[4]) 
 	// | a10 a11 a12 | --> | a10 a11 0 a12 |
 	// | a20 a21 a22 |     |  0   0  1  0  |
 	//                     | a20 a21 0 a22 |
-	
+
 	// and then this gets right-multiplied by a homogeneous coordinate of the form (x, y, 0, 1)
 	// to give another coordinate of the form (x', y', 0, w)
 	// we'll then divide x' and y' by w to get the final coordinate (x'/w, y'/w)
-	
+
 	embeddedHomography.get(0, 0) = homography.get(0, 0);
 	embeddedHomography.get(1, 0) = homography.get(1, 0);
 	embeddedHomography.get(0, 1) = homography.get(0, 1);
@@ -747,6 +801,13 @@ Matrix4 compute_homography(const Vector2 mutated[4], const Vector2 original[4]) 
 
 	return embeddedHomography;
 }
+
+
+
+// This was the old method that used the pseudo inverse to calculate
+// a matrix that attempts to map each pointwise correspondence.
+// It doesn't take into account an implicit scale factor for each pair,
+// so the calculated transformation matrix ends up being affine instead of projective.
 
 /*
 Matrix3 compute_affine(const Vector2 mutated[4], const Vector2 square[4]) { // should be passed in order of TL BL BR TR

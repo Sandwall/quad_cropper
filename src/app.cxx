@@ -5,6 +5,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 // This file is #included inside of main.cpp as part of a "jumbo" build,
 // which means any code here has access to the same stuff that's #included at the top of main.cpp
@@ -177,6 +178,16 @@ struct SgRenderer {
 
 	struct FragmentParams {
 		Matrix4 homography;
+
+		Vector2 squareCentroid;
+		float squareMagnitude;
+
+		uint8_t pad1[4];
+
+		Vector2 mutatedCentroid;
+		float mutatedMagnitude;
+
+		uint8_t pad2[4];
 	} fragUniforms;
 
 	static_assert(sizeof(VertexParams) == sizeof(VertexParams_t));
@@ -635,8 +646,41 @@ inline void draw_editor_with_sg(const ImGuiIO& io, float width, float height) {
 		QuadUv squareQuadUv; // initialized to default square uvs
 		Array<Vector2, 4> quadPoints = quadUv.get_vec2();
 		Array<Vector2, 4> squareQuadPoints = squareQuadUv.get_vec2();
+
+		// compute centroids/magnitudes for both input and output points
+		Vector2& squareCentroid = renderer.fragUniforms.squareCentroid;
+		Vector2& quadCentroid = renderer.fragUniforms.mutatedCentroid;
+		float& squareMag = renderer.fragUniforms.squareMagnitude;
+		float& quadMag = renderer.fragUniforms.mutatedMagnitude;
+
+		squareCentroid.set_zero();
+		quadCentroid.set_zero();
+		for(int i = 0; i < 4; i++) {
+			squareCentroid += squareQuadPoints[i];
+			quadCentroid += quadPoints[i];
+		}
+		squareCentroid /= 4.0f;
+		quadCentroid /= 4.0f;
+
+		squareMag = 0.0f;
+		quadMag = 0.0f;
+		for (int i = 0; i < 4; i++) {
+			squareMag += (squareQuadPoints[i] - squareCentroid).length();
+			quadMag += (quadPoints[i] - quadCentroid).length();
+		}
+		squareMag /= 4.0f;
+		quadMag /= 4.0f;
+
+		// now use the centroids and average magnitudes to normalize each quad pair
+		for(int i = 0; i < 4; i++) {
+			quadPoints[i] = (quadPoints[i] - quadCentroid) / quadMag;
+			squareQuadPoints[i] = (squareQuadPoints[i] - squareCentroid) / squareMag;
+		}
+
+		// now compute homography on normalized point pairs
 		renderer.fragUniforms.homography = compute_homography(quadPoints, squareQuadPoints);
 
+		// draw image using sg/renderer
 		renderer.add_image(loadedImage);
 	}
 
