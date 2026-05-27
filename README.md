@@ -2,6 +2,6 @@
 Small utility for cropping images with custom quad corners.
 
 ## next steps:
-- need to fix the artifact in the output display
-- need to implement the image output button/feature
+- implement svd for homography computation
+- implement image output
 - maybe look at different types of filtering for the output?
