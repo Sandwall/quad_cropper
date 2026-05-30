@@ -20,7 +20,7 @@ set objectFolder=.\obj\%mode%\
 set programPath=%programFolder%\%programName%
 
 if %release% == 0 (
-	set cl_flags=/Od /D "_DEBUG" /MDd /RTC1
+	set cl_flags=/Od /D "_DEBUG" /MDd /RTC1 /fp:strict
 	set link_flags=%link_flags% /PDB:%programPath%.pdb /DEBUG /INCREMENTAL /ILK:%programPath%.ilk /SUBSYSTEM:CONSOLE
 ) else (
 	set mode=Release

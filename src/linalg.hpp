@@ -11,6 +11,14 @@ static inline bool float_is_zero(float val) {
 	return fabsf(val) < FLT_EPSILON;
 }
 
+static inline float float_sign(float val) {
+	if(float_is_zero(val)) return 0.0f;
+	return val > 0.0f ? 1.0f : -1.0f;
+}
+
+// helps control the precision of any printed vectors or matrices
+#define PRINT_FLOAT_STR "%+f"
+
 template <int N> struct Vector {
 	static constexpr int Size = N;
 
@@ -24,10 +32,20 @@ template <int N> struct Vector {
 		return vec;
 	}
 
+	static Vector<N> one() {
+		Vector<N> vec;
+		vec.set_one();
+		return vec;
+	}
+
 	void set_zero() {
-		for(int i = 0; i < N; i++) {
+		for(int i = 0; i < N; i++)
 			data[i] = 0.0f;
-		}
+	}
+
+	void set_one() {
+		for(int i = 0; i < N; i++)
+			data[i] = 1.0f;
 	}
 
 	void fix_zero() {
@@ -38,15 +56,15 @@ template <int N> struct Vector {
 		}
 	}
 
-	void print(FILE* outFile = stdout, bool newLine = true) {
+	void print(FILE* outFile = stdout, bool newLine = true) const {
 		if (1 == Size)
-			fprintf(outFile, "[ %f ] ", data[0]);
+			fprintf(outFile, "[ " PRINT_FLOAT_STR " ] ", data[0]);
 		else {
-			fprintf(outFile, "\xe2\x94\x8c %f \xe2\x94\x90\n", data[0]);       // ┌ ┐
+			fprintf(outFile, "\xe2\x94\x8c " PRINT_FLOAT_STR " \xe2\x94\x90\n", data[0]);       // ┌ ┐
 			for (int i = 1; i < Size - 1; i++) {
-				fprintf(outFile, "\xe2\x94\x82 %f \xe2\x94\x82\n", data[i]);   // │ │
+				fprintf(outFile, "\xe2\x94\x82 " PRINT_FLOAT_STR " \xe2\x94\x82\n", data[i]);   // │ │
 			}
-			fprintf(outFile, "\xe2\x94\x94 %f \xe2\x94\x98 ", data[Size - 1]); // └ ┘
+			fprintf(outFile, "\xe2\x94\x94 " PRINT_FLOAT_STR " \xe2\x94\x98 ", data[Size - 1]); // └ ┘
 		}
 		if (newLine)
 			fprintf(outFile, "\n");
@@ -172,9 +190,10 @@ template <int N> struct Vector {
 
 	Vector normalized() const {
 		const float len = length();
-		if (float_is_zero(len)) {
-			return Vector();
-		}
+
+		if (float_is_zero(len))
+			return Vector::zero();
+
 		return *this / len;
 	}
 
@@ -305,24 +324,24 @@ struct Matrix {
 		}
 	}
 
-	void print(FILE* outFile = stdout, bool newLine = true) {
+	void print(FILE* outFile = stdout, bool newLine = true) const {
 		if (1 == Rows && 1 == Cols) {
-			fprintf(outFile, "[ %f ] ", get(0, 0));
+			fprintf(outFile, "[ " PRINT_FLOAT_STR " ] ", get(0, 0));
 		} else if (1 == Rows) {
 			// row vector: [ f f f ]
 			fprintf(outFile, "[ ");
 			for (int c = 0; c < Cols; c++)
-				fprintf(outFile, "%f ", get(0, c));
+				fprintf(outFile, "" PRINT_FLOAT_STR " ", get(0, c));
 			fprintf(outFile, "]");
 		} else if (1 == Cols) {
 			// column vector (done the same way as Vector<>::print)
 			for (int r = 0; r < Rows; r++) {
 				if (r == 0)
-					fprintf(outFile, "\xe2\x94\x8c %f \xe2\x94\x90\n", get(r, 0));
+					fprintf(outFile, "\xe2\x94\x8c " PRINT_FLOAT_STR " \xe2\x94\x90\n", get(r, 0));
 				else if (r == Rows - 1)
-					fprintf(outFile, "\xe2\x94\x94 %f \xe2\x94\x98\n", get(r, 0));
+					fprintf(outFile, "\xe2\x94\x94 " PRINT_FLOAT_STR " \xe2\x94\x98\n", get(r, 0));
 				else
-					fprintf(outFile, "\xe2\x94\x82 %f \xe2\x94\x82\n", get(r, 0));
+					fprintf(outFile, "\xe2\x94\x82 " PRINT_FLOAT_STR " \xe2\x94\x82\n", get(r, 0));
 			}
 		} else {
 			// Full matrix
@@ -335,7 +354,7 @@ struct Matrix {
 					fprintf(outFile, "\xe2\x94\x82 ");  // │
 
 				for (int c = 0; c < Cols; c++)
-					fprintf(outFile, "%f ", get(r, c));
+					fprintf(outFile, "" PRINT_FLOAT_STR " ", get(r, c));
 
 				if (r == 0)
 					fprintf(outFile, "\xe2\x94\x90\n");  // ┐
@@ -364,13 +383,13 @@ struct Matrix {
 
 	Vector<Cols> get_row(int rowIdx) {
 		Vector<Cols> row;
-		for(int i = 0; i < Rows; i++)
+		for(int i = 0; i < Cols; i++)
 			row[i] = get(rowIdx, i);
 		return row;
 	}
 
 	void set_row(const Vector<Cols>& row, int rowIdx) {
-		for(int i = 0; i < Rows; i++)
+		for(int i = 0; i < Cols; i++)
 			get(rowIdx, i) = row[i];
 	}
 
@@ -475,9 +494,9 @@ struct Matrix {
 
 	Matrix operator-() const {
 		Matrix result;
-		for (int i = 0; i < Rows * Cols; i++) {
+		for (int i = 0; i < Rows * Cols; i++)
 			result.data[i] = -data[i];
-		}
+
 		return result;
 	}
 
@@ -506,10 +525,10 @@ struct Matrix {
 	}
 
 	Matrix operator/(float scalar) const {
-		Matrix result;
 		if (float_is_zero(scalar))
-			return result;
+			return Matrix::zero();
 
+		Matrix result;
 		const float inverse = 1.0f / scalar;
 		for (int i = 0; i < Rows * Cols; i++)
 			result.data[i] = data[i] * inverse;
@@ -689,10 +708,53 @@ struct SvdResult {
 	Matrix<Rows, Cols> Sigma; // contains the singular values
 	Matrix<Cols, Cols> Vt;    // right singular vectors (in rows)
 
-	// NOTE: This was from when I was considering using the One-Sided Jacobi algorithm for calculating SVD
-	// I'm not sure if we'll need it or something similar to implement the current algorithm, so I'll leave it for now.
+	// For general Householder matrices
+	// H = I - 2vvT/vTv
+	// To simplify, we separate 2/vTv into separate constant t = 2/vTv
+
+	// HA = I - (t * v * vTA)
+	//      A - tv * vTA
+	template<int Rows, int Cols>
+	static void left_householder_mul(const Vector<Rows>& v, Matrix<Rows, Cols>& A) {
+		if(float_is_zero(v.length_sq())) return;
+
+		Vector<Cols> rowVtA; // we don't have row vector * matrix implemented, we do it manually here
+		rowVtA.set_zero();
+
+		for(int i = 0; i < Rows; i++) {
+			for(int j = 0; j < Cols; j++) {
+				rowVtA[j] += v[i] * A.get(i, j);
+			}
+		}
+
+		const float t = 2.0f / v.length_sq();
+		for(int i = 0; i < Rows; i++) {
+			const float tv = t * v[i];
+			for(int j = 0; j < Cols; j++) {
+				A.get(i, j) -= tv * rowVtA[j];
+			}
+		}
+	}
+
+	// AH = A(I - (t * v * vT))
+	//      A - Av * tvT
+	template<int Rows, int Cols>
+	static void right_householder_mul(Matrix<Rows, Cols>& A, const Vector<Cols>& v) {
+		if(float_is_zero(v.length_sq())) return;
+
+		Vector<Rows> Av = A * v; // luckily we have matrix * vector implemented
+
+		const float t = 2.0f / v.length_sq();
+		for(int i = 0; i < Rows; i++) {
+			const float tAv = t * Av[i];
+			for(int j = 0; j < Cols; j++) {
+				A.get(i, j) -= tAv * v[j];
+			}
+		}
+	}
+
 	template<int N>
-	static Matrix<N, N> jacobi_rotation(int p, int q, float theta) {
+	static Matrix<N, N> givens_rotation(int p, int q, float theta) {
 		Matrix<N, N> matrix = Matrix<N, N>::identity();
 
 		matrix.get(p, p) = cosf(theta);
@@ -703,9 +765,80 @@ struct SvdResult {
 		return matrix;
 	}
 
+	// Bidiagonalizes the A matrix according to the GK (Golub-Kahan) paper on SVD
+	// -> Performs multiple iterations of PA -> AQ -> ... -> B, where B is bidiagonal
+	template<int Rows, int Cols>
+	static void bidiagonalize(Matrix<Rows, Cols>& A) {
+		for (int i = 0; i < A.MinDim; i++) {
+			Vector<Rows> x = A.get_column(i);
+
+			// zero out elements before i to not disturb any of the previous work we've done
+			for(int j = 0; j < i; j++)
+				x[j] = 0.0f;
+
+			float xNorm = x.length(); // denoted as s_k in GK
+
+			if(!float_is_zero(xNorm)) {
+				const float aii = A.get(i, i);
+
+				x[i] = sqrtf(0.5f * (1.0f + (fabsf(aii) / xNorm))); // x_i is set according to x_k^(k) in GK
+
+				float c; // compute coefficient for elements i+1 to Rows-1
+				if(!float_is_zero(aii))
+					c = 1.0f / (2.0f * xNorm * x[i] * float_sign(aii));
+				else
+					// since aii = 0, we can pick whatever rotation we want to zero out the ith column
+					// in real numbers we can use +1 or 1, and it doesn't really matter in the aii = 0 case
+					c = 1.0f / (2.0f * xNorm * x[i]);
+
+				for(int j = i + 1; j < Rows; j++)
+					x[j] *= c;
+
+				left_householder_mul<Rows, Cols>(x, A); // this corresponds to multiplying by P
+			}
+
+			Vector<Cols> y = A.get_row(i);
+
+			// zero out elements before and including i to not disturb any of the previous work we've done
+			for(int j = 0; j <= i; j++)
+				y[j] = 0.0f;
+
+			float yNorm = y.length(); // denoted as t_k in GK
+
+			// since we want to zero out all elements to the right of the superdiagonal
+			// we only perform the cancellation if we have a column to the right of our current column
+			if(!float_is_zero(yNorm) && (i + 1 < A.MinDim)) {
+				const float aii1 = A.get(i, i + 1); // y_i+1 is set according to y_k+1^(k) in GK
+				y[i + 1] = sqrtf(0.5f * (1.0f + (fabsf(aii1) / yNorm)));
+
+				float d; // compute coefficient for elements i+2 to Cols - 1
+				if(!float_is_zero(aii1))
+					d = 1.0f / (2.0f * yNorm * y[i + 1] * float_sign(aii1));
+				else
+					d = 1.0f / (2.0f * yNorm * y[i + 1]);
+
+				for(int j = i + 2; j < Cols; j++)
+					y[j] *= d;
+
+				right_householder_mul<Rows, Cols>(A, y); // this corresponds to multiplying by Q
+			}
+
+			// NOTE: We don't handle the "else" case when checking if each norm is 0,
+			// since in both cases it would lead to multiplying by an identity matrix
+			// (which is the same as not performing a multiplication at all)
+		}
+	}
+
 	// computes the singular value decomposition of a matrix using the Golub-Kahan-Reisch algorithm
-	static SvdResult compute(const Matrix<Rows, Cols>& matrix) {
+	static SvdResult compute(const Matrix<Rows, Cols>& A) {
 		SvdResult result;
+		result.Sigma = A;
+		bidiagonalize(result.Sigma);
+		result.Sigma.print();
+
+		//
+		// Now we apply a QR algorithm to A
+		//
 
 		// TODO...
 
