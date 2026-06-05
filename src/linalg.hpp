@@ -4,11 +4,12 @@
 #include <math.h>
 #include <stdio.h>
 #include <float.h>
+#include <assert.h>
 
 // uses an epsilon from <float.h> for zero checking
 // this is used in the matrix reduction and inversion algorithms
-static inline bool float_is_zero(float val) {
-	return fabsf(val) < FLT_EPSILON;
+static inline bool float_is_zero(float val, float scale = 1.0f) {
+	return fabsf(val) <= fmaxf(FLT_EPSILON, FLT_EPSILON * scale);
 }
 
 static inline float float_sign(float val) {
@@ -17,7 +18,7 @@ static inline float float_sign(float val) {
 }
 
 // helps control the precision of any printed vectors or matrices
-#define PRINT_FLOAT_STR "%+f"
+#define PRINT_FLOAT_STR "%+.9f"
 
 template <int N> struct Vector {
 	static constexpr int Size = N;
@@ -56,7 +57,10 @@ template <int N> struct Vector {
 		}
 	}
 
-	void print(FILE* outFile = stdout, bool newLine = true) const {
+	void print(const char* caption = nullptr, bool newLine = true, FILE* outFile = stdout) const {
+		if(caption)
+			fprintf(outFile, "%s\n", caption);
+
 		if (1 == Size)
 			fprintf(outFile, "[ " PRINT_FLOAT_STR " ] ", data[0]);
 		else {
@@ -324,7 +328,10 @@ struct Matrix {
 		}
 	}
 
-	void print(FILE* outFile = stdout, bool newLine = true) const {
+	void print(const char* caption = nullptr, bool newLine = true, FILE* outFile = stdout) const {
+		if (caption)
+			fprintf(outFile, "%s\n", caption);
+
 		if (1 == Rows && 1 == Cols) {
 			fprintf(outFile, "[ " PRINT_FLOAT_STR " ] ", get(0, 0));
 		} else if (1 == Rows) {
@@ -393,6 +400,12 @@ struct Matrix {
 			get(rowIdx, i) = row[i];
 	}
 
+	void add_diagonal(float scalar) {
+		for(int i = 0; i < MinDim; i++) {
+			get(i, i) += scalar;
+		}
+	}
+
 	float& get(int row, int col) { return data[(row * Cols) + col]; }
 	const float& get(int row, int col) const { return data[(row * Cols) + col]; }
 
@@ -419,7 +432,7 @@ struct Matrix {
 	}
 
 	void row_swap(int row1, int row2) {
-		constexpr int ROW_SIZE = sizeof(float) * Cols;
+		static constexpr int ROW_SIZE = sizeof(float) * Cols;
 
 		// place row1 in temp buffer
 		float row[Cols];
@@ -432,10 +445,19 @@ struct Matrix {
 		memcpy(data + (row2 * Cols), row, ROW_SIZE);
 	}
 
+	// now elementary column operations (multiply and muladd aren't implemented since we don't need them immediately)
+	void col_swap(int col1, int col2) {
+		for(int i = 0; i < Rows; i++) {
+			float temp = get(i, col1);
+			get(i, col1) = get(i, col2);
+			get(i, col2) = temp;
+		}
+	}
+
 	// invert a square matrix using Gauss-Jordan Elimination
 	Matrix<Rows, Rows> inversed() const {
 		static_assert(Rows == Cols, "inverse not defined for non-square matrices");
-		constexpr int N = Rows;
+		static constexpr int N = Rows;
 
 		Matrix<Rows, Rows> current = *this;
 		Matrix<Rows, Rows> inverse = Matrix<Rows, Rows>::identity();
@@ -697,7 +719,7 @@ Vector2 rotate(const Vector2& vec, float angle) {
 //
 // Therefore... TODO:
 // - probably rewrite this blurb/section to be a bit shorter and less repetetive
-// - implement SVD, which means look up the Golub-Kahan-Reisch algorithm... should be fine for an 8x9 matrix
+// - implement SVD, which means look up the Golub-Kahan algorithm... should be fine for an 8x9 matrix
 
 template<int Rows, int Cols>
 struct SvdResult {
@@ -710,7 +732,9 @@ struct SvdResult {
 
 	// For general Householder matrices
 	// H = I - 2vvT/vTv
-	// To simplify, we separate 2/vTv into separate constant t = 2/vTv
+	// To simplify, we separate 2/vTv into separate constants t = 2/vTv
+
+	// A useful note: Left multiplication transforms rows, right multiplication transforms columns
 
 	// HA = I - (t * v * vTA)
 	//      A - tv * vTA
@@ -753,22 +777,10 @@ struct SvdResult {
 		}
 	}
 
-	template<int N>
-	static Matrix<N, N> givens_rotation(int p, int q, float theta) {
-		Matrix<N, N> matrix = Matrix<N, N>::identity();
-
-		matrix.get(p, p) = cosf(theta);
-		matrix.get(q, q) = matrix.get(p, p);
-		matrix.get(p, q) = sinf(theta);
-		matrix.get(q, p) = -matrix.get(p, q);
-
-		return matrix;
-	}
-
 	// Bidiagonalizes the A matrix according to the GK (Golub-Kahan) paper on SVD
 	// -> Performs multiple iterations of PA -> AQ -> ... -> B, where B is bidiagonal
 	template<int Rows, int Cols>
-	static void bidiagonalize(Matrix<Rows, Cols>& A) {
+	static void bidiagonalize(Matrix<Rows, Cols>& A, Matrix<Rows, Rows>* P = nullptr, Matrix<Cols, Cols>* Q = nullptr) {
 		for (int i = 0; i < A.MinDim; i++) {
 			Vector<Rows> x = A.get_column(i);
 
@@ -795,6 +807,7 @@ struct SvdResult {
 					x[j] *= c;
 
 				left_householder_mul<Rows, Cols>(x, A); // this corresponds to multiplying by P
+				if(P) right_householder_mul<Rows, Rows>(*P, x);
 			}
 
 			Vector<Cols> y = A.get_row(i);
@@ -821,26 +834,240 @@ struct SvdResult {
 					y[j] *= d;
 
 				right_householder_mul<Rows, Cols>(A, y); // this corresponds to multiplying by Q
+				if(Q) left_householder_mul<Cols, Cols>(y, *Q);
 			}
 
 			// NOTE: We don't handle the "else" case when checking if each norm is 0,
 			// since in both cases it would lead to multiplying by an identity matrix
 			// (which is the same as not performing a multiplication at all)
 		}
+
+		// All of the entries in the diagonal and superdiagonal must be 0,
+		// and we might have some near-zero entries due to floating-point precision
+		// We'll just zero them out manually as follows:
+
+//		for(int i = 0; i < Rows; i++) {
+//			for(int j = 0; j < Cols; j++) {
+//				bool isNonzero = (i == j) || ((i + 1) == j);
+//				if(!isNonzero)
+//					A.get(i, j) = 0.0f;
+//			}
+//		}
 	}
 
-	// computes the singular value decomposition of a matrix using the Golub-Kahan-Reisch algorithm
-	static SvdResult compute(const Matrix<Rows, Cols>& A) {
-		SvdResult result;
+	// Reinsch in "Singular Value Decomposition and Least Squares Solutions" calculates the convergence threshold as
+	// the machine epsilon multiplied by the infinity norm of Sigma, which is just the absolute max row sum
+	static float infinity_norm_of_bidiagonal_matrix(const Matrix<Rows, Cols>& A) {
+		float result = 0.0f;
+
+		for(int i = 0; i < Rows; i++) {
+			// Since A is bidiagonal, we don't need to iterate over the entire row
+			float rowSum = fabsf(A.get(i, i));
+			if(i < (Cols - 1))
+				rowSum += fabsf(A.get(i, i + 1));
+
+			result = fmaxf(result, rowSum);
+		}
+
+		return result;
+	}
+
+	// NOTE: the default value for sizeActiveSubmatrix in the 3 functions below is Cols
+	// since we only ever use these functions in the context where Cols == MinDim
+
+	// Computes a shift parameter used for shifted QR iteration (uses Wilkinson shift if possible)
+	template<int Rows, int Cols>
+	static float compute_shift(const Matrix<Rows, Cols>& matrix, int sizeActiveSubmatrix = Cols) {
+		if(sizeActiveSubmatrix < 1) return 0;
+		if(sizeActiveSubmatrix == 1) return matrix.get(0, 0);
+
+		// a b
+		// c d
+		// Wilkinson's shift is defined as the the eigenvalues of the bottom right 2x2 submatrix of the deflated matrix
+		// We can choose either eigenvalue for this shift, so we just choose the one closer to d
+		const float a = matrix.get(sizeActiveSubmatrix - 2, sizeActiveSubmatrix - 2);
+		const float b = matrix.get(sizeActiveSubmatrix - 2, sizeActiveSubmatrix - 1);
+		const float c = matrix.get(sizeActiveSubmatrix - 1, sizeActiveSubmatrix - 2);
+		const float d = matrix.get(sizeActiveSubmatrix - 1, sizeActiveSubmatrix - 1);
+
+		// eigenvalues of a triangular matrix are just the diagonal entries
+		// since our matrix after step 1 is bidiagonal, we should never reach the code below
+		if(float_is_zero(c)) return d;
+
+													 // a = 1 is implicit
+		const float trace = a + d;                   // -b
+		const float determinant = (a * d) - (b * c); // c
+		float discriminant = (trace * trace) - (4.0f * determinant);
+
+		if (discriminant >= 0) {
+			discriminant = sqrtf(discriminant);
+
+			float e1 = 0.5f * (trace + discriminant);
+			float e2 = 0.5f * (trace - discriminant);
+
+			if(fabsf(e1 - d) <= fabsf(e2 - d)) return e1;
+			else return e2;
+		} else
+			return d;
+			// If Wilkinson shift is complex, then use the bottom right entry of the deflated matrix as a shift value
+	}
+
+	// Let G = | c -s |, this represents a counterclockwise rotation
+	//         | s  c |
+
+	// GA, transforms the rows of A
+	template<int Rows, int Cols>
+	static void left_givens_rot(Matrix<Rows, Cols>& A, int p, int q, float c, float s, int sizeActiveSubmatrix = Cols) {
+		// NOTE: This assert is here to guard against out of bounds access, but when calling this function,
+		// we need to ensure that p and q are always less than A.MinDim - numDeflations
+		assert(p >= 0 && p < Rows);
+		assert(q >= 0 && q < Rows);
+
+		for(int i = 0; i < sizeActiveSubmatrix; i++) {
+			float pi = c * A.get(p, i) - s * A.get(q, i);
+			float qi = s * A.get(p, i) + c * A.get(q, i);
+			A.get(p, i) = pi; // row p
+			A.get(q, i) = qi; // row q
+		}
+	}
+
+	// AG, transforms the columns A
+	template<int Rows, int Cols>
+	static void right_givens_rot(Matrix<Rows, Cols>& A, int p, int q, float c, float s, int sizeActiveSubmatrix = Cols) {
+		// NOTE: see above function
+		assert(p >= 0 && p < Cols);
+		assert(q >= 0 && q < Cols);
+
+		for(int i = 0; i < sizeActiveSubmatrix; i++) {
+			float ip = c * A.get(i, p) + s * A.get(i, q);
+			float iq = -s * A.get(i, p) + c * A.get(i, q);
+			A.get(i, p) = ip; // col p
+			A.get(i, q) = iq; // col q
+		}
+	}
+
+	// Handles initial edge cases for the main computation function below
+	static bool is_initial_edge_case(const Matrix<Rows, Cols>& A, SvdResult& result) {
+		static_assert(A.MinDim > 0, "Can't take the SVD of an empty matrix!");
+
+		// SVD of 1x1 is just the matrix
+		if(Rows == 1 && Cols == 1) {
+			result.Sigma.get(0, 0) = A.get(0, 0);
+			result.U.set_identity();
+			result.Vt.set_identity();
+			return true;
+		}
+
+		// The main algorithm assumes that Rows >= Cols, but if we transpose the input in the case of Rows < Cols
+		// then the SVD of the original input is just the transposed SVD of the tranposed input
+		// It'll take up a little bit more memory, but I'm fine with that cost we won't usually input huge matrices
+		if(Rows < Cols) {
+			auto transposedResult = SvdResult<Cols, Rows>::compute(A.transposed());
+			result.Sigma = transposedResult.Sigma.transposed();
+			result.U = transposedResult.Vt.transposed();
+			result.Vt = transposedResult.U.transposed();
+			return true;
+		}
+
+		return false;
+	}
+
+	// Computes the singular value decomposition of a matrix using the Golub-Kahan algorithm
+	static SvdResult compute(const Matrix<Rows, Cols>& A, int maxIterations = 30) {
+		SvdResult result = { 0 };
+
+		if(is_initial_edge_case(A, result))
+			return result;
+
+		//
+		// Step 1: A is bidiagonalized using Householder reflections, and we end up with
+		// A = P * B * Qt, where B is a bidiagonal matrix... P = result.U, B = result.Sigma and Qt = result.Vt
+		//
+
 		result.Sigma = A;
-		bidiagonalize(result.Sigma);
-		result.Sigma.print();
+		result.U.set_identity();
+		result.Vt.set_identity();
 
+		bidiagonalize<Rows, Cols>(result.Sigma, &result.U, &result.Vt);
+		auto& Sigma = result.Sigma;
+		auto& U = result.U;
+		auto& Vt = result.Vt;
+		
 		//
-		// Now we apply a QR algorithm to A
+		// Step 2: Apply an implicit QR algorithm with shift to B to decompose it into X * Sigma * Yt
+		// We'll accumulate all right-multiplied Givens rotations to the left of result.Vt
+		// and similar for the left-multiplied rotations to the right of result.U
 		//
 
-		// TODO...
+		int superdiagonalIterations = 0; // not used for the result, but we can keep it anyways
+		float infinityNorm = infinity_norm_of_bidiagonal_matrix(Sigma); // used for convergence threshold
+
+		// NOTE:
+		// i represents the size of the active submatrix
+		// (i - 1, i - 1) represents the bottom diagonal element in that submatrix
+		// (i - 2, i - 1) represents the superdiagonal above that diagonal element
+		// Since our loop goes from A.MinDim to 1, these indices should be valid, as long as we never access something like (i, i)
+		// Additionally, A.MinDim == 1 is already handled in
+
+		int i = A.MinDim;
+		while(i > 1) {
+			// This is placed at the top in case we get a lucky situation where the superdiagonal is somehow already zero
+			if(float_is_zero(Sigma.get(i - 2, i - 1), infinityNorm) || superdiagonalIterations > maxIterations) {
+				superdiagonalIterations = 0;
+				i--;
+				continue;
+			}
+
+			const float shift = compute_shift(Sigma, i);
+
+			// Initial Givens rotation is computed from the top left element of BtB-uI and the element under it
+			float a = (Sigma.get(0, 0) * Sigma.get(0, 0)) - shift;
+			float b = Sigma.get(0, 0) * Sigma.get(0, 1);
+			float denom = sqrtf((a * a) + (b * b));
+			a /= denom;
+			b /= denom;
+			right_givens_rot(Sigma, 0, 1, a, b, i);
+			left_givens_rot(Vt, 0, 1, a, b);
+
+			// Chase the "bulge" introduced by that rotation - NOTE: in each rotation we try to zero b
+			for(int j = 0; j < i - 1; j++) {
+				a = Sigma.get(j, j);
+				b = Sigma.get(j + 1, j);
+				denom = sqrtf((a * a) + (b * b));
+				a /= denom;
+				b /= denom;
+				left_givens_rot(Sigma, j, j + 1, a, -b, i);
+				right_givens_rot(U, j, j + 1, a, b);
+
+				if(j < (i - 2)) {
+					a = Sigma.get(j, j + 1);
+					b = Sigma.get(j, j + 2);
+					denom = sqrtf((a * a) + (b * b));
+					a /= denom;
+					b /= denom;
+					right_givens_rot(Sigma, j + 1, j + 2, a, b, i);
+					left_givens_rot(Vt, j + 1, j + 2, a, b);
+				}
+			}
+
+			superdiagonalIterations++;
+		}
+
+		// Ensure all singular values are positive
+		// If we find any negative ones, flip the corresponding column of U
+		for(int i = 0; i < A.MinDim; i++) {
+			if(Sigma.get(i, i) < 0.0f) {
+				Sigma.get(i, i) = -Sigma.get(i, i);
+
+				for(int j = 0; j < Rows; j++) {
+					U.get(j, i) = -U.get(j, i);
+				}
+			}
+		}
+
+//		result.Sigma.print("Singular value matrix:");
+//		A.print("Original matrix A:");
+//		(result.U * result.Sigma * result.Vt).print("Recombined matrix:");
 
 		return result;
 	}
@@ -894,20 +1121,23 @@ Matrix4 compute_homography(const Vector2 mutated[4], const Vector2 original[4]) 
 	// are just the right singular vectors. We wouldn't do this on a computer though, since it results in precision loss.
 	//
 
-	auto svd = SvdResult<8, 9>::compute(dltMatrix);
-	Vector<9> homographyVector = svd.Vt.get_row(8);
+	Matrix3 homography; {
+		Vector<9> homographyVector; {
+			auto svd = SvdResult<8, 9>::compute(dltMatrix);
+			homographyVector = svd.Vt.get_row(8);
+		}
 
-	// now we unroll the flattened 9-vector of the homography entries into a 3x3 homography matrix
-	Matrix3 homography; // no need to initialize on declaration, we do that below
-	homography.get(0, 0) = homographyVector[0];
-	homography.get(0, 1) = homographyVector[1];
-	homography.get(0, 2) = homographyVector[2];
-	homography.get(1, 0) = homographyVector[3];
-	homography.get(1, 1) = homographyVector[4];
-	homography.get(1, 2) = homographyVector[5];
-	homography.get(2, 0) = homographyVector[6];
-	homography.get(2, 1) = homographyVector[7];
-	homography.get(2, 2) = homographyVector[8];
+		// now we unroll the flattened 9-vector of the homography entries into a 3x3 homography matrix
+		homography.get(0, 0) = homographyVector[0];
+		homography.get(0, 1) = homographyVector[1];
+		homography.get(0, 2) = homographyVector[2];
+		homography.get(1, 0) = homographyVector[3];
+		homography.get(1, 1) = homographyVector[4];
+		homography.get(1, 2) = homographyVector[5];
+		homography.get(2, 0) = homographyVector[6];
+		homography.get(2, 1) = homographyVector[7];
+		homography.get(2, 2) = homographyVector[8];
+	}
 
 	// this is purely a sokol_gfx workaround, since it sokol-shdc (shader compiler) doesn't allow for mat3
 	// so we need to embed the 3x3 homography in a 4x4 matrix
@@ -931,7 +1161,6 @@ Matrix4 compute_homography(const Vector2 mutated[4], const Vector2 original[4]) 
 	embeddedHomography.get(0, 3) = homography.get(0, 2);
 	embeddedHomography.get(1, 3) = homography.get(1, 2);
 	embeddedHomography.get(3, 3) = homography.get(2, 2);
-
 	return embeddedHomography;
 }
 
@@ -941,9 +1170,7 @@ Matrix4 compute_homography(const Vector2 mutated[4], const Vector2 original[4]) 
 // a matrix that attempts to map each pointwise correspondence.
 // It doesn't take into account an implicit scale factor for each pair,
 // so the calculated transformation matrix ends up being affine instead of projective.
-
-/*
-Matrix3 compute_affine(const Vector2 mutated[4], const Vector2 square[4]) { // should be passed in order of TL BL BR TR
+static Matrix4 compute_affine(const Vector2 mutated[4], const Vector2 square[4]) { // should be passed in order of TL BL BR TR
 	// We want a matrix A that we can multiply square UVs (x,y) by to get our mutated quad UVs (x',y')
 	// we can model this as Y=AX... if we take the right pseudo inverse of X to be Xp such that XXp=I
 	// then we can multiply it on both sides to get YXp=A
@@ -953,11 +1180,21 @@ Matrix3 compute_affine(const Vector2 mutated[4], const Vector2 square[4]) { // s
 		X.set_column(Vector3::homogeneous(square[i].x(), square[i].y()), i);
 	}
 
-	Matrix<4, 3> Xt = X.transposed();
+	Matrix3 homography; {
+		Matrix<4, 3> Xt = X.transposed();
+		Matrix<4, 3> Xp = Xt * (X * Xt).inversed();
+		homography = Y * Xp; // since A = YXp
+	}
 
-	// so now compute pseudo inverse of X
-	Matrix<4, 3> Xp = Xt * (X * Xt).inversed();
-
-	return Y * Xp; // since A = YXp
+	Matrix4 embeddedHomography = Matrix4::identity();
+	embeddedHomography.get(0, 0) = homography.get(0, 0);
+	embeddedHomography.get(1, 0) = homography.get(1, 0);
+	embeddedHomography.get(0, 1) = homography.get(0, 1);
+	embeddedHomography.get(1, 1) = homography.get(1, 1);
+	embeddedHomography.get(3, 0) = homography.get(2, 0);
+	embeddedHomography.get(3, 1) = homography.get(2, 1);
+	embeddedHomography.get(0, 3) = homography.get(0, 2);
+	embeddedHomography.get(1, 3) = homography.get(1, 2);
+	embeddedHomography.get(3, 3) = homography.get(2, 2);
+	return embeddedHomography;
 }
-*/

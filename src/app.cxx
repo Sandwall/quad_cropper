@@ -139,18 +139,10 @@ struct ImageInfo {
 			view = { 0 };
 		}
 	}
-} loadedImage, defaultImage;
+};
 
 // doesn't do anything besides init/cleanup/hold sokol_gfx resources
 struct SgRenderer {
-	sg_shader mainShader;
-	sg_pipeline mainPipeline;
-	sg_sampler linearSampler;
-	sg_buffer vertexBuffer;
-
-	// NOTE: we'll bind the vertexBuffer and the linearSampler at the start
-	sg_bindings bindings;
-
 	struct Vertex {
 		Vector2 position;
 		Vector2 uv;
@@ -169,6 +161,13 @@ struct SgRenderer {
 		};
 	};
 
+	sg_shader mainShader;
+	sg_pipeline mainPipeline;
+	sg_sampler linearSampler;
+	sg_buffer vertexBuffer;
+	sg_bindings bindings; // NOTE: we bind vertexBuffer and linearSampler at the start
+
+	ImageInfo defaultImage;
 	Array<Quad, 4> quads;
 	int numQuads;
 
@@ -194,6 +193,8 @@ struct SgRenderer {
 	static_assert(sizeof(FragmentParams) == sizeof(FragmentParams_t));
 
 	void init() {
+		defaultImage = ImageInfo::load_default();
+
 		linearSampler = sg_make_sampler(sg_sampler_desc{
 			.min_filter = SG_FILTER_LINEAR,
 			.mag_filter = SG_FILTER_LINEAR,
@@ -240,6 +241,7 @@ struct SgRenderer {
 	}
 
 	void cleanup() {
+		defaultImage.release();
 		sg_destroy_buffer(vertexBuffer);
 		sg_destroy_shader(mainShader);
 		sg_destroy_pipeline(mainPipeline);
@@ -273,9 +275,7 @@ struct SgRenderer {
 		q.br2 = q.br;
 	}
 
-	void add_image(const ImageInfo& image) {
-		const float width = static_cast<float>(loadedImage.width);
-		const float height = static_cast<float>(loadedImage.height);
+	void add_image(const ImageInfo& image, float width, float height) {
 		const float halfWidth = width / 2.0f;
 		const float halfHeight = height / 2.0f;
 		Quad& q = quads[numQuads++];
@@ -309,10 +309,7 @@ struct SgRenderer {
 		sg_draw(0, numQuads * 6, 1);
 	}
 
-} renderer;
-
-float viewScale;
-ImVec2 viewPos;
+};
 
 union QuadUv {
 	ImVec2 uvs[4];
@@ -333,13 +330,22 @@ union QuadUv {
 	Array<Vector2, 4> get_vec2() {
 		Array<Vector2, 4> av4;
 
-		for(int i = 0; i < 4; i++) {
+		for(int i = 0; i < 4; i++)
 			av4[i] = { uvs[i].x, uvs[i].y };
-		}
 
 		return av4;
 	}
-} quadUv;
+};
+
+ImageInfo loadedImage;
+SgRenderer renderer;
+QuadUv quadUv;
+
+float viewScale = 1.0f;
+ImVec2 viewPos = { 0.0f, 0.0f };
+ImVec2 outputSize = { 512, 512 };
+bool calculateOutputSize = true;
+bool normalizePoints = false;
 
 std::string nfdError;
 
@@ -357,11 +363,6 @@ void draw_editor_with_sg(const ImGuiIO& io, float width, float height);
 
 void app_init() {
 	renderer.init();
-
-	defaultImage = ImageInfo::load_default();
-
-	viewScale = 1.0f;
-	viewPos = { 0.0f, 0.0f };
 }
 
 void app_frame() {
@@ -370,8 +371,6 @@ void app_frame() {
 	const ImGuiIO& io = ImGui::GetIO();
 
 	setup_mainmenu_bar();
-
-	// ImGui::ShowDemoWindow();
 
 	build_imgui_controls(io, screenWidth, screenHeight);
 	build_imgui_modals();
@@ -424,6 +423,13 @@ inline void setup_mainmenu_bar() {
 		ImGui::OpenPopup("Export Cropped Image");
 	}
 
+	float textWidth = ImGui::CalcTextSize("Reset View").x;
+	ImGui::SetCursorPosX(ImGui::GetContentRegionAvail().x - textWidth);
+	if (ImGui::MenuItem("Reset View")) {
+		viewPos = { 0.0f, 0.0f };
+		viewScale = 1.0f;
+	}
+
 	build_imgui_export_modal();
 
 	ImGui::EndMainMenuBar();
@@ -455,15 +461,14 @@ inline void build_imgui_modals() {
 void build_imgui_export_modal() {
 	if (ImGui::BeginPopupModal("Export Cropped Image")) {
 		static int outputFilterChoice = 0;
+
 		constexpr int numOutputFilters = 2;
 		static const char* outputFilters[numOutputFilters] = {
 			"Nearest Neighbor",
 			"Bilinear"
 		};
-		static int outputResolution[2] = { 512, 512 };
 
 		ImGui::ListBox("Output Filters", &outputFilterChoice, outputFilters, numOutputFilters);
-		ImGui::DragInt2("Output Resolution", outputResolution, 0, 0);
 
 		if (ImGui::Button("Save")) {
 			nfdu8char_t* path = nullptr;
@@ -494,7 +499,7 @@ void build_imgui_export_modal() {
 	}
 }
 
-// we'll just reset this in the frame, it's used in
+// we'll just reset this in the frame, it's for the test/printing function below
 int numMatricesPrintedInFrame = 0;
 
 template<int Rows, int Cols>
@@ -513,23 +518,50 @@ static void print_matrix_imgui(const Matrix<Rows, Cols>& matrix) {
 	ImGui::PopID();
 }
 
+static inline void help_marker(const char* text) {
+	ImGui::TextDisabled("(?)");
+	if (ImGui::BeginItemTooltip()) {
+		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+		ImGui::TextUnformatted(text);
+		ImGui::PopTextWrapPos();
+		ImGui::EndTooltip();
+	}
+}
+
 inline void build_imgui_controls(const ImGuiIO& io, float width, float height) {
 	numMatricesPrintedInFrame = 0;
 
 	if (loadedImage.is_loaded()) {
-		// Controls Winodw
+		// Controls Window
 		ImGui::SetNextWindowSize(ImVec2(width / 2.0f, 2.0f * height / 3.0f), ImGuiCond_Appearing);
 		if (ImGui::Begin("Controls")) {
 			static constexpr float LONG_AXIS_PADDING = 32.0f;
 			static constexpr float HANDLE_RADIUS = 16.0f;
 
-			if(ImGui::Button("Reset to Default")) {
-				quadUv.reset();
+			if(ImGui::BeginTable("ControlsTable", 2)) {
+				ImGui::TableNextRow();
+				ImGui::TableSetColumnIndex(0); // column 1
+
+				if(ImGui::Button("Reset to Default"))
+					quadUv.reset();
+
+				ImGui::SliderFloat2("Top Left", &quadUv.tl.x, 0.0, 1.0);
+				ImGui::SliderFloat2("Bottom Left", &quadUv.bl.x, 0.0, 1.0);
+				ImGui::SliderFloat2("Bottom Right", &quadUv.br.x, 0.0, 1.0);
+				ImGui::SliderFloat2("Top Right", &quadUv.tr.x, 0.0, 1.0);
+
+				ImGui::TableSetColumnIndex(1); // column 2
+				ImGui::DragFloat2("Output Size", &outputSize.x, 1.0f);
+				ImGui::Checkbox("Calculate output size", &calculateOutputSize);
+				ImGui::SameLine();
+				help_marker("Turning this option will try to calculate the output size using a naive approach that averages line lengths. This should work fine for more rectangular quads, but probably breaks on more anisotropic ones.");
+
+				ImGui::Checkbox("Normalize Points", &normalizePoints);
+				ImGui::SameLine();
+				help_marker("Turning this option on will make it so that the points are normalized before calculating the mapping. It shouldn't make a difference whether it's on or off visually, but if things ever look off, maybe maybe this could fix it (?)");
+
+				ImGui::EndTable();
 			}
-			ImGui::SliderFloat2("Top Left", &quadUv.tl.x, 0.0, 1.0);
-			ImGui::SliderFloat2("Bottom Left", &quadUv.bl.x, 0.0, 1.0);
-			ImGui::SliderFloat2("Bottom Right", &quadUv.br.x, 0.0, 1.0);
-			ImGui::SliderFloat2("Top Right", &quadUv.tr.x, 0.0, 1.0);
 
 			ImVec2 editorSize = ImGui::GetContentRegionAvail();
 			ImVec2 editorTopLeft = ImGui::GetCursorScreenPos();
@@ -631,6 +663,8 @@ inline void handle_mouse_controls(const ImGuiIO& io, float width, float height) 
 	}
 }
 
+static inline float length(const ImVec2& vec) { return sqrtf((vec.x * vec.x) + (vec.y * vec.y)); }
+
 inline void draw_editor_with_sg(const ImGuiIO& io, float width, float height) {
 	renderer.start_frame();
 	renderer.vertexUniforms.mvp =
@@ -653,23 +687,30 @@ inline void draw_editor_with_sg(const ImGuiIO& io, float width, float height) {
 		float& squareMag = renderer.fragUniforms.squareMagnitude;
 		float& quadMag = renderer.fragUniforms.mutatedMagnitude;
 
-		squareCentroid.set_zero();
-		quadCentroid.set_zero();
-		for(int i = 0; i < 4; i++) {
-			squareCentroid += squareQuadPoints[i];
-			quadCentroid += quadPoints[i];
-		}
-		squareCentroid /= 4.0f;
-		quadCentroid /= 4.0f;
+		if(normalizePoints) {
+			squareCentroid.set_zero();
+			quadCentroid.set_zero();
+			for(int i = 0; i < 4; i++) {
+				squareCentroid += squareQuadPoints[i];
+				quadCentroid += quadPoints[i];
+			}
+			squareCentroid /= 4.0f;
+			quadCentroid /= 4.0f;
 
-		squareMag = 0.0f;
-		quadMag = 0.0f;
-		for (int i = 0; i < 4; i++) {
-			squareMag += (squareQuadPoints[i] - squareCentroid).length();
-			quadMag += (quadPoints[i] - quadCentroid).length();
+			squareMag = 0.0f;
+			quadMag = 0.0f;
+			for (int i = 0; i < 4; i++) {
+				squareMag += (squareQuadPoints[i] - squareCentroid).length();
+				quadMag += (quadPoints[i] - quadCentroid).length();
+			}
+			squareMag /= 4.0f;
+			quadMag /= 4.0f;
+		} else {
+			squareCentroid.set_zero();
+			quadCentroid.set_zero();
+			squareMag = 1.0f;
+			quadMag = 1.0f;
 		}
-		squareMag /= 4.0f;
-		quadMag /= 4.0f;
 
 		// now use the centroids and average magnitudes to normalize each quad pair
 		for(int i = 0; i < 4; i++) {
@@ -680,8 +721,14 @@ inline void draw_editor_with_sg(const ImGuiIO& io, float width, float height) {
 		// now compute homography on normalized point pairs
 		renderer.fragUniforms.homography = compute_homography(quadPoints, squareQuadPoints);
 
-		// draw image using sg/renderer
-		renderer.add_image(loadedImage);
+		// draw image using sg/renderer - we first compute the new image size
+		float hScale = 0.5f * (length(quadUv.tr - quadUv.tl) + length(quadUv.br - quadUv.bl));
+		float vScale = 0.5f * (length(quadUv.tr - quadUv.br) + length(quadUv.tl - quadUv.bl));
+		if(calculateOutputSize) {
+			outputSize.x = hScale * static_cast<float>(loadedImage.width);
+			outputSize.y = vScale * static_cast<float>(loadedImage.height);
+		}
+		renderer.add_image(loadedImage, outputSize.x, outputSize.y);
 	}
 
 	// our matrices are stored in row-major order, and sokol_gfx expects column major order

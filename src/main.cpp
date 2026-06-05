@@ -12,7 +12,7 @@ void init() {
 		.logger = {.func = slog_func },
 	});
 
-	ImGui::GetIO().FontGlobalScale = 1.5f;
+	ImGui::GetIO().FontGlobalScale = 1.f;
 
 	NFD_Init();
 	app_init();
@@ -65,8 +65,8 @@ sapp_desc sokol_main(int argc, char* argv[]) {
 #ifdef _DEBUG
 		.win32 = {
 			.console_utf8 = true,
-			.console_create = false,
-			.console_attach = true
+			.console_create = true,
+			.console_attach = false
 		}
 #endif
 	};
